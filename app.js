@@ -322,6 +322,8 @@ const elements = {
   statPractice: el("statPractice"),
   statVocab: el("statVocab"),
   statPatterns: el("statPatterns"),
+  deepAnalysisBtn: el("deepAnalysisBtn"),
+  statHabits: el("statHabits"),
   conversationCount: el("conversationCount"),
   conversationList: el("conversationList"),
   conversationEmpty: el("conversationEmpty"),
@@ -437,6 +439,9 @@ function bindEvents() {
     void refreshConversations();
     void refreshImports();
   });
+  if (elements.deepAnalysisBtn) {
+    elements.deepAnalysisBtn.addEventListener("click", handleDeepAnalysis);
+  }
   elements.reanalyzeBtn.addEventListener("click", handleReanalyzeAll);
   elements.generatePracticeBtn.addEventListener("click", handleGeneratePractice);
   elements.practiceList.addEventListener("click", handlePracticeAction);
@@ -1606,6 +1611,99 @@ function handleImportListAction(event) {
   if (actionTarget.dataset.importAction === "view") {
     void openImportDetail(importId);
   }
+}
+
+async function handleDeepAnalysis() {
+  if (!elements.statHabits) return;
+
+  elements.deepAnalysisBtn.disabled = true;
+  elements.statHabits.innerHTML = '<li class="loading">正在挖掘您的语言习惯...</li>';
+
+  try {
+    // 1. 收集所有用户语句
+    const [{ conversationIncludeMap, importIncludeMap }, messages, importMessages] =
+      await Promise.all([
+        loadIncludeMaps(),
+        getAllRecords("messages"),
+        getAllRecords("importMessages"),
+      ]);
+
+    const userSentences = [...messages, ...importMessages]
+      .filter((msg) =>
+        msg.role === "user" &&
+        msg.text &&
+        msg.text.trim().length > 1
+      )
+      .filter((msg) => {
+        if (msg.importId) {
+          return isImportIncluded(msg.importId, importIncludeMap, msg.conversationId);
+        }
+        return isConversationIncluded(msg.conversationId, conversationIncludeMap);
+      })
+      .map(msg => msg.text);
+
+    if (userSentences.length < 5) {
+      elements.statHabits.innerHTML = '<li>数据不足，请多聊几句再试。</li>';
+      return;
+    }
+
+    // 2. 调用 Python 服务
+    const response = await fetch("/api/habit/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sentences: userSentences, min_support: 2 })
+    });
+
+    if (!response.ok) {
+      throw new Error(`服务异常: ${response.status}`);
+    }
+
+    const result = await response.json();
+    const patterns = result.patterns || [];
+
+    // 3. 渲染结果
+    renderHabitList(elements.statHabits, patterns);
+
+  } catch (error) {
+    console.error("挖掘失败", error);
+    elements.statHabits.innerHTML = `<li style="color:red">挖掘失败，请确保后台 Python 服务已启动 (Port 8006)。<br>错误: ${error.message}</li>`;
+  } finally {
+    elements.deepAnalysisBtn.disabled = false;
+  }
+}
+
+function renderHabitList(target, patterns) {
+  target.innerHTML = "";
+  if (!patterns.length) {
+    target.innerHTML = "<li>未发现显著的习惯模式。</li>";
+    return;
+  }
+
+  // 取前 10 个最有意义的
+  const topPatterns = patterns.slice(0, 10);
+
+  topPatterns.forEach(p => {
+    const li = document.createElement("li");
+
+    const patternSpan = document.createElement("span");
+    patternSpan.className = "pattern";
+    patternSpan.textContent = p.template; // e.g. "我 经常 <verb>"
+
+    const countSpan = document.createElement("span");
+    countSpan.className = "count";
+    countSpan.textContent = String(p.count);
+
+    li.appendChild(patternSpan);
+    li.appendChild(countSpan);
+
+    // Optional: Add tooltip or expand for examples
+    if (p.examples && p.examples.length) {
+      li.title = "例句:\n" + p.examples.join("\n");
+      li.style.cursor = "help";
+    }
+
+    target.appendChild(li);
+  });
 }
 
 async function openImportDetail(importId) {

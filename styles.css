@@ -383,6 +383,127 @@ textarea {
   flex: 1;
 }
 
+.stats-imports {
+  margin-top: 18px;
+}
+
+.import-list-card {
+  display: grid;
+  gap: 12px;
+}
+
+.import-list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.import-list-header p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.import-count {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--paper-2);
+  padding: 6px 10px;
+  border-radius: 999px;
+  align-self: flex-start;
+}
+
+.import-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.import-item {
+  background: var(--paper);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  box-shadow: var(--soft-shadow);
+}
+
+.import-item-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.import-item-title {
+  font-weight: 600;
+}
+
+.import-item-time {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.import-item-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.import-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.import-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 4px;
+}
+
+.record-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.record-toggle input {
+  accent-color: var(--accent-2);
+}
+
+.import-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.import-detail-card {
+  width: min(860px, 100%);
+}
+
+.import-detail-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.import-detail-window {
+  max-height: 420px;
+}
+
 .practice-meta {
   margin-bottom: 16px;
   color: var(--muted);
@@ -782,3 +903,58 @@ button {
     max-height: 280px;
   }
 }
+
+/* Deep Analysis / Habit Miner Styles */
+.card-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.card-header-row h3 {
+  margin: 0;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.habit-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+
+.habit-list li {
+  background: var(--paper-2);
+  padding: 8px 12px;
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+}
+
+.habit-list li .pattern {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.habit-list li .count {
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(240, 90, 40, 0.1);
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 12px;
+}
+
+.hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+

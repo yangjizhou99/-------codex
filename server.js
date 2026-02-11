@@ -116,6 +116,51 @@ async function handleProxy(req, res, requestUrl) {
   }
 }
 
+async function handleHabit(req, res) {
+  if (req.method === "OPTIONS") {
+    send(res, 204, "", {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendText(res, 405, "Method Not Allowed", { Allow: "POST, OPTIONS" });
+    return;
+  }
+
+  // 读取 Request Body
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks).toString();
+
+  try {
+    // 转发给 Python 服务 (Port 8006)
+    const pythonRes = await fetch("http://127.0.0.1:8006/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: body,
+    });
+
+    if (!pythonRes.ok) {
+      throw new Error(`Python service error: ${pythonRes.status}`);
+    }
+
+    const data = await pythonRes.json();
+    sendJson(res, 200, data, { "Access-Control-Allow-Origin": "*" });
+
+  } catch (error) {
+    console.error("Habit Mining Error:", error);
+    sendJson(res, 502, { error: "habit_service_unavailable" }, { "Access-Control-Allow-Origin": "*" });
+  }
+}
+
 async function handleStatic(req, res, requestUrl) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     sendText(res, 405, "Method Not Allowed", { Allow: "GET, HEAD" });
@@ -151,6 +196,10 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   if (requestUrl.pathname === "/proxy") {
     await handleProxy(req, res, requestUrl);
+    return;
+  }
+  if (requestUrl.pathname === "/api/habit/analyze") {
+    await handleHabit(req, res);
     return;
   }
   await handleStatic(req, res, requestUrl);
