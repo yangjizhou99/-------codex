@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>母语起步</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-mark">NL</div>
+          <div class="brand-text">
+            <h1>母语起步</h1>
+            <p>从你常说的话出发，学会你最需要的英语表达。</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="ghost" id="settingsBtn" type="button">设置</button>
+          <button class="ghost" id="newSessionBtn" type="button">新会话</button>
+        </div>
+      </header>
+
+      <nav class="tab-rail" role="tablist">
+        <button class="tab active" data-panel="chat" type="button" role="tab" aria-selected="true">
+          对话
+        </button>
+        <button class="tab" data-panel="stats" type="button" role="tab" aria-selected="false">
+          统计
+        </button>
+        <button class="tab" data-panel="practice" type="button" role="tab" aria-selected="false">
+          练习
+        </button>
+        <button class="tab" data-panel="cards" type="button" role="tab" aria-selected="false">
+          卡片
+        </button>
+      </nav>
+
+      <main class="panel-stack">
+        <section class="panel active" id="panel-chat" role="tabpanel">
+          <div class="panel-inner">
+            <div class="panel-title">
+              <div>
+                <h2>对话</h2>
+                <p>记录你的自然表达，让教练及时回应。</p>
+              </div>
+              <div class="panel-actions">
+                <button class="ghost" id="exportBtn" type="button">导出 JSON</button>
+              </div>
+            </div>
+            <div class="chat-window" id="chatWindow">
+              <div class="chat-empty" id="chatEmpty">
+                从你常说的一句话开始，说出来或打字。
+              </div>
+            </div>
+            <div class="chat-composer">
+              <div class="composer-tools">
+                <button class="icon" id="micBtn" type="button" aria-pressed="false">语音</button>
+                <div class="composer-meta">
+                  <span id="micStatus">麦克风空闲</span>
+                  <span id="analysisStatus">分析：初始化中</span>
+                </div>
+              </div>
+              <label class="sr-only" for="chatInput">消息</label>
+              <textarea
+                id="chatInput"
+                rows="3"
+                placeholder="用母语说出你想表达的内容..."
+              ></textarea>
+              <div class="composer-actions">
+                <button class="ghost" id="clearInput" type="button">清空</button>
+                <button class="primary" id="sendBtn" type="button">发送</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-stats" role="tabpanel">
+          <div class="panel-inner">
+            <div class="panel-title">
+              <div>
+                <h2>统计</h2>
+                <p>你的语言习惯画像。</p>
+              </div>
+              <div class="panel-actions">
+                <button class="ghost" id="refreshStatsBtn" type="button">刷新</button>
+                <button class="ghost" id="reanalyzeBtn" type="button">重新分析历史</button>
+              </div>
+            </div>
+            <div class="stats-summary">
+              <div class="summary-card">
+                <span class="label">语句数</span>
+                <span class="value" id="statUtterances">0</span>
+              </div>
+              <div class="summary-card">
+                <span class="label">已分析</span>
+                <span class="value" id="statAnalyzed">0</span>
+              </div>
+              <div class="summary-card">
+                <span class="label">练习卡</span>
+                <span class="value" id="statPractice">0</span>
+              </div>
+            </div>
+            <div class="stats-grid">
+              <div class="stat-card">
+                <h3>高频词汇</h3>
+                <ul id="statVocab"></ul>
+              </div>
+              <div class="stat-card">
+                <h3>高频句型</h3>
+                <ul id="statPatterns"></ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-practice" role="tabpanel">
+          <div class="panel-inner">
+            <div class="panel-title">
+              <div>
+                <h2>练习</h2>
+                <p>从你的话里生成任务型练习。</p>
+              </div>
+              <div class="panel-actions">
+                <button class="primary" id="generatePracticeBtn" type="button">生成练习</button>
+              </div>
+            </div>
+            <div class="practice-meta" id="practiceMeta">暂无练习任务。</div>
+            <div class="practice-list" id="practiceList"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-cards" role="tabpanel">
+          <div class="panel-inner">
+            <div class="panel-title">
+              <div>
+                <h2>学习卡片</h2>
+                <p>从语句中整理词汇与句型。</p>
+              </div>
+              <div class="panel-actions">
+                <label class="inline-select">
+                  <span>补全语言</span>
+                  <select id="cardLangSelect">
+                    <option value="en">英语</option>
+                  </select>
+                </label>
+                <button class="ghost" id="refreshCardsBtn" type="button">刷新</button>
+                <button class="primary" id="enrichCardsBtn" type="button">补全卡片</button>
+              </div>
+            </div>
+            <div class="card-status" id="cardStatus">
+              卡片由本地算法生成，补全会调用大模型。
+            </div>
+            <div class="card-section">
+              <div class="card-section-title">
+                <h3>词汇</h3>
+              </div>
+              <div class="card-grid" id="vocabCards"></div>
+            </div>
+            <div class="card-section">
+              <div class="card-section-title">
+                <h3>句型</h3>
+              </div>
+              <div class="card-grid" id="patternCards"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal" id="settingsModal" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="modal-header">
+          <h2 id="settingsTitle">设置</h2>
+          <button class="icon" id="closeSettingsBtn" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <label class="field">
+            <span>DeepSeek API 密钥</span>
+            <input type="password" id="apiKeyInput" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>API 地址</span>
+            <input type="text" id="apiBaseInput" placeholder="https://api.deepseek.com/v1" />
+          </label>
+          <label class="field">
+            <span>模型</span>
+            <select id="modelSelect">
+              <option value="deepseek-chat">deepseek-chat</option>
+              <option value="deepseek-reasoner">deepseek-reasoner</option>
+            </select>
+          </label>
+          <label class="field inline">
+            <span>自动分析</span>
+            <input type="checkbox" id="autoAnalyzeToggle" />
+          </label>
+          <label class="field inline">
+            <span>语音识别语言</span>
+            <select id="speechLangSelect">
+              <option value="zh-CN">zh-CN</option>
+              <option value="en-US">en-US</option>
+            </select>
+          </label>
+          <p class="hint">句型与词汇分析由本地算法完成。</p>
+          <p class="hint">设置仅保存在本地浏览器。</p>
+        </div>
+        <div class="modal-actions">
+          <button class="ghost" id="cancelSettingsBtn" type="button">取消</button>
+          <button class="primary" id="saveSettingsBtn" type="button">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
