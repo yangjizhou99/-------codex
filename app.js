@@ -1,9 +1,11 @@
 import initJieba, { tag } from "https://cdn.jsdelivr.net/npm/jieba-wasm@2.4.0/pkg/web/jieba_rs_wasm.js";
 
 const DB_NAME = "native-loop-db";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const SETTINGS_KEY = "nativeLoop.settings";
 const LAST_CONVO_KEY = "nativeLoop.lastConversationId";
+const META_SETTINGS_KEY = "settings";
+const META_LAST_CONVO_KEY = "lastConversationId";
 
 const defaultSettings = {
   apiKey: "",
@@ -223,7 +225,13 @@ const CARD_LANG_LABELS = {
 
 const state = {
   conversationId: null,
+  conversationMeta: null,
   messages: [],
+  conversations: [],
+  conversationStats: new Map(),
+  conversationPage: 1,
+  imports: [],
+  importPage: 1,
   analyses: new Map(),
   practice: [],
   isSending: false,
@@ -254,6 +262,7 @@ const importState = {
 };
 
 const IMPORT_PREVIEW_LIMIT = 30;
+const IMPORT_PAGE_SIZE = 10;
 
 const el = (id) => document.getElementById(id);
 
@@ -313,21 +322,48 @@ const elements = {
   statPractice: el("statPractice"),
   statVocab: el("statVocab"),
   statPatterns: el("statPatterns"),
+  conversationCount: el("conversationCount"),
+  conversationList: el("conversationList"),
+  conversationEmpty: el("conversationEmpty"),
+  conversationPagination: el("conversationPagination"),
+  conversationPrevBtn: el("conversationPrevBtn"),
+  conversationNextBtn: el("conversationNextBtn"),
+  conversationPageInfo: el("conversationPageInfo"),
+  importCount: el("importCount"),
+  importList: el("importList"),
+  importEmpty: el("importEmpty"),
+  importPagination: el("importPagination"),
+  importPrevBtn: el("importPrevBtn"),
+  importNextBtn: el("importNextBtn"),
+  importPageInfo: el("importPageInfo"),
+  conversationDetailModal: el("conversationDetailModal"),
+  closeConversationDetailBtn: el("closeConversationDetailBtn"),
+  conversationDetailTitle: el("conversationDetailTitle"),
+  conversationDetailMeta: el("conversationDetailMeta"),
+  conversationDetailWindow: el("conversationDetailWindow"),
+  importDetailModal: el("importDetailModal"),
+  closeImportDetailBtn: el("closeImportDetailBtn"),
+  importDetailTitle: el("importDetailTitle"),
+  importDetailMeta: el("importDetailMeta"),
+  importDetailWindow: el("importDetailWindow"),
 };
 
-let settings = loadSettings();
+let settings = { ...defaultSettings };
 
 init();
 
 async function init() {
-  applySettingsToUI();
   bindEvents();
-  await initSegmenter();
   await openDb();
+  settings = await loadSettings();
+  applySettingsToUI();
+  await initSegmenter();
   await loadConversation();
   renderMessages();
   await refreshStats();
-  renderPractice();
+  await refreshConversations({ page: 1 });
+  await refreshImports();
+  await renderPractice();
   await refreshCards();
   setupSpeechRecognition();
 }
@@ -376,9 +412,15 @@ function bindEvents() {
   elements.settingsBtn.addEventListener("click", () => openModal(true));
   elements.closeSettingsBtn.addEventListener("click", () => openModal(false));
   elements.cancelSettingsBtn.addEventListener("click", () => openModal(false));
-  elements.saveSettingsBtn.addEventListener("click", saveSettingsFromUI);
-  elements.newSessionBtn.addEventListener("click", handleNewSession);
-  elements.exportBtn.addEventListener("click", exportData);
+  elements.saveSettingsBtn.addEventListener("click", () => {
+    void saveSettingsFromUI();
+  });
+  elements.newSessionBtn.addEventListener("click", () => {
+    void handleNewSession();
+  });
+  elements.exportBtn.addEventListener("click", () => {
+    void exportData();
+  });
   elements.importBtn.addEventListener("click", () => openImportModal(true));
   elements.closeImportBtn.addEventListener("click", () => openImportModal(false));
   elements.cancelImportBtn.addEventListener("click", () => openImportModal(false));
@@ -387,8 +429,14 @@ function bindEvents() {
   elements.importSplitSelect.addEventListener("change", updateImportPreview);
   elements.importMapping.addEventListener("change", handleImportMappingChange);
   elements.swapImportRolesBtn.addEventListener("click", handleSwapImportRoles);
-  elements.confirmImportBtn.addEventListener("click", handleConfirmImport);
-  elements.refreshStatsBtn.addEventListener("click", refreshStats);
+  elements.confirmImportBtn.addEventListener("click", () => {
+    void handleConfirmImport();
+  });
+  elements.refreshStatsBtn.addEventListener("click", () => {
+    void refreshStats();
+    void refreshConversations();
+    void refreshImports();
+  });
   elements.reanalyzeBtn.addEventListener("click", handleReanalyzeAll);
   elements.generatePracticeBtn.addEventListener("click", handleGeneratePractice);
   elements.practiceList.addEventListener("click", handlePracticeAction);
@@ -401,6 +449,34 @@ function bindEvents() {
   });
   elements.vocabCards.addEventListener("click", handleCardToggle);
   elements.patternCards.addEventListener("click", handleCardToggle);
+  if (elements.conversationList) {
+    elements.conversationList.addEventListener("click", handleConversationListAction);
+    elements.conversationList.addEventListener("change", handleRecordToggleChange);
+  }
+  if (elements.conversationPrevBtn) {
+    elements.conversationPrevBtn.addEventListener("click", () => handleConversationPageChange(-1));
+  }
+  if (elements.conversationNextBtn) {
+    elements.conversationNextBtn.addEventListener("click", () => handleConversationPageChange(1));
+  }
+  if (elements.closeConversationDetailBtn) {
+    elements.closeConversationDetailBtn.addEventListener("click", () =>
+      openConversationDetailModal(false)
+    );
+  }
+  if (elements.importList) {
+    elements.importList.addEventListener("click", handleImportListAction);
+    elements.importList.addEventListener("change", handleRecordToggleChange);
+  }
+  if (elements.importPrevBtn) {
+    elements.importPrevBtn.addEventListener("click", () => handleImportPageChange(-1));
+  }
+  if (elements.importNextBtn) {
+    elements.importNextBtn.addEventListener("click", () => handleImportPageChange(1));
+  }
+  if (elements.closeImportDetailBtn) {
+    elements.closeImportDetailBtn.addEventListener("click", () => openImportDetailModal(false));
+  }
 }
 
 function switchPanel(panelName) {
@@ -414,6 +490,11 @@ function switchPanel(panelName) {
   });
   if (panelName === "cards") {
     refreshCards();
+  }
+  if (panelName === "stats") {
+    void refreshStats();
+    void refreshConversations();
+    void refreshImports();
   }
 }
 
@@ -431,16 +512,62 @@ function openImportModal(show) {
   }
 }
 
-function loadSettings() {
+function openConversationDetailModal(show) {
+  if (!elements.conversationDetailModal) return;
+  elements.conversationDetailModal.classList.toggle("show", show);
+  elements.conversationDetailModal.setAttribute("aria-hidden", String(!show));
+}
+
+function openImportDetailModal(show) {
+  if (!elements.importDetailModal) return;
+  elements.importDetailModal.classList.toggle("show", show);
+  elements.importDetailModal.setAttribute("aria-hidden", String(!show));
+}
+
+async function loadSettings() {
   try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    const saved = await getMetaValue(META_SETTINGS_KEY);
     if (saved && typeof saved === "object") {
       return { ...defaultSettings, ...saved };
     }
   } catch (error) {
     console.warn("设置加载失败", error);
   }
+  const legacy = loadLegacySettings();
+  if (legacy) {
+    void setMetaValue(META_SETTINGS_KEY, legacy);
+    return { ...defaultSettings, ...legacy };
+  }
   return { ...defaultSettings };
+}
+
+function loadLegacySettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (saved && typeof saved === "object") {
+      return saved;
+    }
+  } catch (error) {
+    console.warn("旧设置读取失败", error);
+  }
+  return null;
+}
+
+async function loadLastConversationId() {
+  try {
+    const saved = await getMetaValue(META_LAST_CONVO_KEY);
+    if (saved) {
+      return saved;
+    }
+  } catch (error) {
+    console.warn("会话标记加载失败", error);
+  }
+  const legacy = localStorage.getItem(LAST_CONVO_KEY);
+  if (legacy) {
+    void setMetaValue(META_LAST_CONVO_KEY, legacy);
+    return legacy;
+  }
+  return null;
 }
 
 function applySettingsToUI() {
@@ -452,7 +579,7 @@ function applySettingsToUI() {
   updateAnalysisStatus();
 }
 
-function saveSettingsFromUI() {
+async function saveSettingsFromUI() {
   settings = {
     apiKey: elements.apiKeyInput.value.trim(),
     apiBase: elements.apiBaseInput.value.trim() || defaultSettings.apiBase,
@@ -460,26 +587,31 @@ function saveSettingsFromUI() {
     autoAnalyze: elements.autoAnalyzeToggle.checked,
     speechLang: elements.speechLangSelect.value,
   };
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  try {
+    await setMetaValue(META_SETTINGS_KEY, settings);
+  } catch (error) {
+    console.error("设置保存失败", error);
+  }
   applySettingsToUI();
   updateSpeechRecognitionLanguage();
   openModal(false);
 }
 
-function handleNewSession() {
-  createConversation().then(async (conversation) => {
-    state.conversationId = conversation.id;
-    state.messages = [];
-    localStorage.setItem(LAST_CONVO_KEY, conversation.id);
-    renderMessages();
-    refreshStats();
-    renderPractice();
-  });
+async function handleNewSession() {
+  const conversation = await createConversation();
+  state.conversationId = conversation.id;
+  state.conversationMeta = conversation;
+  state.messages = [];
+  await setMetaValue(META_LAST_CONVO_KEY, conversation.id);
+  renderMessages();
+  await refreshStats();
+  await refreshConversations();
+  await renderPractice();
 }
 
 async function loadConversation() {
   let conversation = null;
-  const savedId = localStorage.getItem(LAST_CONVO_KEY);
+  const savedId = await loadLastConversationId();
   if (savedId) {
     conversation = await getRecord("conversations", savedId);
   }
@@ -493,8 +625,13 @@ async function loadConversation() {
   if (!conversation) {
     conversation = await createConversation();
   }
+  if (conversation.includeInStats == null) {
+    conversation.includeInStats = true;
+    await updateRecord("conversations", conversation);
+  }
   state.conversationId = conversation.id;
-  localStorage.setItem(LAST_CONVO_KEY, conversation.id);
+  state.conversationMeta = conversation;
+  await setMetaValue(META_LAST_CONVO_KEY, conversation.id);
   const messages = await getAllFromIndex("messages", "conversationId", conversation.id);
   messages.sort((a, b) => a.createdAt - b.createdAt);
   state.messages = messages;
@@ -650,9 +787,20 @@ async function handleReanalyzeAll() {
   elements.reanalyzeBtn.disabled = true;
   await initSegmenter();
   try {
-    const messages = await getAllRecords("messages");
-    const userMessages = messages
+    const [{ conversationIncludeMap, importIncludeMap }, messages, importMessages] =
+      await Promise.all([
+        loadIncludeMaps(),
+        getAllRecords("messages"),
+        getAllRecords("importMessages"),
+      ]);
+    const userMessages = [...messages, ...importMessages]
       .filter((message) => message.role === "user" && message.text && message.text.trim())
+      .filter((message) => {
+        if (message.importId || getImportIdFromConversationId(message.conversationId)) {
+          return isImportIncluded(message.importId, importIncludeMap, message.conversationId);
+        }
+        return isConversationIncluded(message.conversationId, conversationIncludeMap);
+      })
       .sort((a, b) => a.createdAt - b.createdAt);
     if (!userMessages.length) {
       elements.analysisStatus.textContent = "分析：暂无语句";
@@ -707,6 +855,17 @@ function updateAnalysisStatus({ running = false, failed = false, initializing = 
 function formatTime(timestamp) {
   if (!timestamp) return "";
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDateTime(timestamp) {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString([], {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 async function addMessage(role, text) {
@@ -979,16 +1138,36 @@ function safeParseJson(text) {
 
 async function refreshStats() {
   try {
-    const [messages, analyses, practice] = await Promise.all([
-      getAllRecords("messages"),
-      getAllRecords("analyses"),
-      getAllRecords("practice"),
-    ]);
-    const utterances = messages.filter((message) => message.role === "user").length;
+    const [{ conversationIncludeMap, importIncludeMap }, messages, importMessages, analyses, practice] =
+      await Promise.all([
+        loadIncludeMaps(),
+        getAllRecords("messages"),
+        getAllRecords("importMessages"),
+        getAllRecords("analyses"),
+        getAllRecords("practice"),
+      ]);
+    const filteredMessages = messages.filter((message) =>
+      isConversationIncluded(message.conversationId, conversationIncludeMap)
+    );
+    const filteredImportMessages = importMessages.filter((message) =>
+      isImportIncluded(message.importId, importIncludeMap, message.conversationId)
+    );
+    const utterances = [...filteredMessages, ...filteredImportMessages].filter(
+      (message) => message.role === "user"
+    ).length;
     elements.statUtterances.textContent = String(utterances);
-    const analysisList = dedupeAnalyses(analyses);
+    const analysisList = dedupeAnalyses(analyses).filter((record) =>
+      isAnalysisIncluded(record, conversationIncludeMap, importIncludeMap)
+    );
     elements.statAnalyzed.textContent = String(analysisList.length);
-    elements.statPractice.textContent = String(practice.length);
+    const filteredPractice = practice.filter((record) => {
+      const importId = getImportIdFromConversationId(record.conversationId);
+      if (importId) {
+        return isImportIncluded(importId, importIncludeMap, record.conversationId);
+      }
+      return isConversationIncluded(record.conversationId, conversationIncludeMap);
+    });
+    elements.statPractice.textContent = String(filteredPractice.length);
 
     const vocabCounts = new Map();
     const patternCounts = new Map();
@@ -1021,6 +1200,449 @@ async function refreshStats() {
   }
 }
 
+async function loadSessionRecords() {
+  const [conversations, imports] = await Promise.all([
+    getAllRecords("conversations"),
+    getAllRecords("imports"),
+  ]);
+  await ensureIncludeFlags(conversations, "conversations");
+  await ensureIncludeFlags(imports, "imports");
+  return { conversations, imports };
+}
+
+async function ensureIncludeFlags(records, storeName) {
+  const updates = [];
+  records.forEach((record) => {
+    if (!record) return;
+    if (record.includeInStats == null) {
+      record.includeInStats = true;
+      updates.push(updateRecord(storeName, record));
+    }
+  });
+  if (!updates.length) return;
+  try {
+    await Promise.all(updates);
+  } catch (error) {
+    console.error("记录更新失败", error);
+  }
+}
+
+async function loadIncludeMaps() {
+  const { conversations, imports } = await loadSessionRecords();
+  return buildIncludeMaps(conversations, imports);
+}
+
+function buildIncludeMaps(conversations, imports) {
+  const conversationIncludeMap = new Map();
+  conversations.forEach((record) => {
+    if (!record || !record.id) return;
+    conversationIncludeMap.set(record.id, record.includeInStats !== false);
+  });
+  const importIncludeMap = new Map();
+  imports.forEach((record) => {
+    if (!record || !record.id) return;
+    importIncludeMap.set(record.id, record.includeInStats !== false);
+  });
+  return { conversationIncludeMap, importIncludeMap };
+}
+
+function isConversationIncluded(conversationId, includeMap) {
+  if (!conversationId) return true;
+  if (!includeMap || !includeMap.has(conversationId)) return true;
+  return includeMap.get(conversationId);
+}
+
+function isImportIncluded(importId, includeMap, conversationId) {
+  const resolvedId = importId || getImportIdFromConversationId(conversationId);
+  if (!resolvedId) return true;
+  if (!includeMap || !includeMap.has(resolvedId)) return true;
+  return includeMap.get(resolvedId);
+}
+
+function isAnalysisIncluded(record, conversationIncludeMap, importIncludeMap) {
+  if (!record) return true;
+  const conversationId = record.conversationId;
+  if (!conversationId) return true;
+  const importId = getImportIdFromConversationId(conversationId);
+  if (importId) {
+    return isImportIncluded(importId, importIncludeMap, conversationId);
+  }
+  return isConversationIncluded(conversationId, conversationIncludeMap);
+}
+
+function getImportIdFromConversationId(conversationId) {
+  if (!conversationId || typeof conversationId !== "string") return null;
+  if (!conversationId.startsWith("import:")) return null;
+  return conversationId.slice("import:".length);
+}
+
+async function refreshConversations({ page } = {}) {
+  if (!elements.conversationList) return;
+  try {
+    const [{ conversations }, messages] = await Promise.all([
+      loadSessionRecords(),
+      getAllRecords("messages"),
+    ]);
+    const statsMap = buildConversationStats(messages);
+    state.conversationStats = statsMap;
+    conversations.sort((a, b) => b.createdAt - a.createdAt);
+    state.conversations = conversations;
+    const totalPages = Math.max(1, Math.ceil(conversations.length / IMPORT_PAGE_SIZE));
+    const nextPage = Math.min(totalPages, Math.max(1, page || state.conversationPage));
+    state.conversationPage = nextPage;
+    renderConversationList();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function buildConversationStats(messages) {
+  const statsMap = new Map();
+  messages.forEach((message) => {
+    const conversationId = message.conversationId;
+    if (!conversationId) return;
+    if (!statsMap.has(conversationId)) {
+      statsMap.set(conversationId, { total: 0, user: 0, assistant: 0 });
+    }
+    const stats = statsMap.get(conversationId);
+    stats.total += 1;
+    if (message.role === "user") {
+      stats.user += 1;
+    } else if (message.role === "assistant") {
+      stats.assistant += 1;
+    }
+  });
+  return statsMap;
+}
+
+function renderConversationList() {
+  if (!elements.conversationList || !elements.conversationEmpty || !elements.conversationPagination) {
+    return;
+  }
+  const total = state.conversations.length;
+  elements.conversationList.innerHTML = "";
+  if (elements.conversationCount) {
+    elements.conversationCount.textContent = total ? `共 ${total} 条` : "暂无记录";
+  }
+  if (!total) {
+    elements.conversationEmpty.style.display = "block";
+    elements.conversationPagination.style.display = "none";
+    return;
+  }
+  elements.conversationEmpty.style.display = "none";
+  const totalPages = Math.max(1, Math.ceil(total / IMPORT_PAGE_SIZE));
+  const start = (state.conversationPage - 1) * IMPORT_PAGE_SIZE;
+  const pageItems = state.conversations.slice(start, start + IMPORT_PAGE_SIZE);
+  pageItems.forEach((record) => {
+    const item = document.createElement("li");
+    item.className = "import-item";
+
+    const header = document.createElement("div");
+    header.className = "import-item-header";
+    const title = document.createElement("div");
+    title.className = "import-item-title";
+    title.textContent = record.title || "会话";
+    const time = document.createElement("div");
+    time.className = "import-item-time";
+    time.textContent = formatDateTime(record.createdAt);
+    header.appendChild(title);
+    header.appendChild(time);
+
+    const meta = document.createElement("div");
+    meta.className = "import-item-meta";
+    const metaParts = [];
+    if (record.id === state.conversationId) {
+      metaParts.push("当前会话");
+    }
+    const stats = state.conversationStats.get(record.id) || { total: 0, user: 0, assistant: 0 };
+    if (stats.total) {
+      metaParts.push(`消息 ${stats.total}`);
+      metaParts.push(`用户 ${stats.user} / 对方 ${stats.assistant}`);
+    } else {
+      metaParts.push("暂无消息");
+    }
+    meta.textContent = metaParts.join(" · ");
+
+    const actions = document.createElement("div");
+    actions.className = "import-item-actions";
+    const toggle = createIncludeToggle({
+      type: "conversation",
+      id: record.id,
+      include: record.includeInStats,
+    });
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "ghost";
+    viewBtn.type = "button";
+    viewBtn.textContent = "查看";
+    viewBtn.dataset.conversationAction = "view";
+    viewBtn.dataset.conversationId = record.id;
+    actions.appendChild(toggle);
+    actions.appendChild(viewBtn);
+
+    item.appendChild(header);
+    item.appendChild(meta);
+    item.appendChild(actions);
+    elements.conversationList.appendChild(item);
+  });
+
+  elements.conversationPagination.style.display = totalPages > 1 ? "flex" : "none";
+  if (elements.conversationPageInfo) {
+    elements.conversationPageInfo.textContent = `${state.conversationPage} / ${totalPages}`;
+  }
+  if (elements.conversationPrevBtn) {
+    elements.conversationPrevBtn.disabled = state.conversationPage <= 1;
+  }
+  if (elements.conversationNextBtn) {
+    elements.conversationNextBtn.disabled = state.conversationPage >= totalPages;
+  }
+}
+
+function handleConversationPageChange(delta) {
+  const totalPages = Math.max(1, Math.ceil(state.conversations.length / IMPORT_PAGE_SIZE));
+  const nextPage = Math.min(totalPages, Math.max(1, state.conversationPage + delta));
+  if (nextPage === state.conversationPage) return;
+  state.conversationPage = nextPage;
+  renderConversationList();
+}
+
+function handleConversationListAction(event) {
+  const actionTarget = event.target.closest("[data-conversation-action]");
+  if (!actionTarget) return;
+  const conversationId = actionTarget.dataset.conversationId;
+  if (!conversationId) return;
+  if (actionTarget.dataset.conversationAction === "view") {
+    void openConversationDetail(conversationId);
+  }
+}
+
+async function openConversationDetail(conversationId) {
+  if (!elements.conversationDetailWindow) return;
+  const record = state.conversations.find((item) => item.id === conversationId);
+  if (!record) return;
+  if (elements.conversationDetailTitle) {
+    elements.conversationDetailTitle.textContent = record.title || "会话";
+  }
+  const stats = state.conversationStats.get(record.id) || { total: 0, user: 0, assistant: 0 };
+  const metaParts = [];
+  if (record.createdAt) metaParts.push(`时间：${formatDateTime(record.createdAt)}`);
+  if (stats.total) {
+    metaParts.push(`用户 ${stats.user} / 对方 ${stats.assistant}`);
+    metaParts.push(`共 ${stats.total} 条`);
+  }
+  if (elements.conversationDetailMeta) {
+    elements.conversationDetailMeta.textContent = metaParts.join(" · ");
+  }
+
+  const messages = await getAllFromIndex("messages", "conversationId", conversationId);
+  messages.sort((a, b) => a.createdAt - b.createdAt);
+  elements.conversationDetailWindow.innerHTML = "";
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty";
+    empty.textContent = "暂无内容";
+    elements.conversationDetailWindow.appendChild(empty);
+  } else {
+    messages.forEach((message) => {
+      elements.conversationDetailWindow.appendChild(createMessageElement(message));
+    });
+  }
+  openConversationDetailModal(true);
+}
+
+async function refreshImports({ page } = {}) {
+  if (!elements.importList) return;
+  try {
+    const { imports } = await loadSessionRecords();
+    imports.sort((a, b) => b.createdAt - a.createdAt);
+    state.imports = imports;
+    const totalPages = Math.max(1, Math.ceil(imports.length / IMPORT_PAGE_SIZE));
+    const nextPage = Math.min(totalPages, Math.max(1, page || state.importPage));
+    state.importPage = nextPage;
+    renderImportList();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function renderImportList() {
+  if (!elements.importList || !elements.importEmpty || !elements.importPagination) return;
+  const total = state.imports.length;
+  elements.importList.innerHTML = "";
+  if (elements.importCount) {
+    elements.importCount.textContent = total ? `共 ${total} 条` : "暂无记录";
+  }
+  if (!total) {
+    elements.importEmpty.style.display = "block";
+    elements.importPagination.style.display = "none";
+    return;
+  }
+  elements.importEmpty.style.display = "none";
+  const totalPages = Math.max(1, Math.ceil(total / IMPORT_PAGE_SIZE));
+  const start = (state.importPage - 1) * IMPORT_PAGE_SIZE;
+  const pageItems = state.imports.slice(start, start + IMPORT_PAGE_SIZE);
+  pageItems.forEach((record) => {
+    const item = document.createElement("li");
+    item.className = "import-item";
+
+    const header = document.createElement("div");
+    header.className = "import-item-header";
+    const title = document.createElement("div");
+    title.className = "import-item-title";
+    title.textContent = record.title || "导入对话";
+    const time = document.createElement("div");
+    time.className = "import-item-time";
+    time.textContent = formatDateTime(record.createdAt);
+    header.appendChild(title);
+    header.appendChild(time);
+
+    const meta = document.createElement("div");
+    meta.className = "import-item-meta";
+    const sourceLabel = getImportSourceLabel(record.source);
+    const metaParts = [];
+    if (sourceLabel) metaParts.push(`来源：${sourceLabel}`);
+    if (record.messageCount) metaParts.push(`消息 ${record.messageCount}`);
+    if (record.userCount != null && record.assistantCount != null) {
+      metaParts.push(`用户 ${record.userCount} / 对方 ${record.assistantCount}`);
+    }
+    meta.textContent = metaParts.join(" · ");
+
+    const actions = document.createElement("div");
+    actions.className = "import-item-actions";
+    const toggle = createIncludeToggle({
+      type: "import",
+      id: record.id,
+      include: record.includeInStats,
+    });
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "ghost";
+    viewBtn.type = "button";
+    viewBtn.textContent = "查看";
+    viewBtn.dataset.importAction = "view";
+    viewBtn.dataset.importId = record.id;
+    actions.appendChild(toggle);
+    actions.appendChild(viewBtn);
+
+    item.appendChild(header);
+    item.appendChild(meta);
+    item.appendChild(actions);
+    elements.importList.appendChild(item);
+  });
+
+  elements.importPagination.style.display = totalPages > 1 ? "flex" : "none";
+  if (elements.importPageInfo) {
+    elements.importPageInfo.textContent = `${state.importPage} / ${totalPages}`;
+  }
+  if (elements.importPrevBtn) {
+    elements.importPrevBtn.disabled = state.importPage <= 1;
+  }
+  if (elements.importNextBtn) {
+    elements.importNextBtn.disabled = state.importPage >= totalPages;
+  }
+}
+
+function createIncludeToggle({ type, id, include }) {
+  const label = document.createElement("label");
+  label.className = "record-toggle";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = include !== false;
+  input.dataset.recordToggle = "true";
+  input.dataset.recordType = type;
+  input.dataset.recordId = id;
+  const text = document.createElement("span");
+  text.textContent = "参与计算";
+  label.appendChild(input);
+  label.appendChild(text);
+  return label;
+}
+
+async function handleRecordToggleChange(event) {
+  try {
+    const input = event.target.closest("input[data-record-toggle='true']");
+    if (!input) return;
+    const recordType = input.dataset.recordType;
+    const recordId = input.dataset.recordId;
+    if (!recordType || !recordId) return;
+    const includeInStats = input.checked;
+
+    if (recordType === "conversation") {
+      const record = state.conversations.find((item) => item.id === recordId);
+      if (!record) return;
+      record.includeInStats = includeInStats;
+      await updateRecord("conversations", record);
+      if (recordId === state.conversationId && state.conversationMeta) {
+        state.conversationMeta.includeInStats = includeInStats;
+      }
+    }
+
+    if (recordType === "import") {
+      const record = state.imports.find((item) => item.id === recordId);
+      if (!record) return;
+      record.includeInStats = includeInStats;
+      await updateRecord("imports", record);
+    }
+
+    await refreshStats();
+    await renderPractice();
+    await refreshCards();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function handleImportPageChange(delta) {
+  const totalPages = Math.max(1, Math.ceil(state.imports.length / IMPORT_PAGE_SIZE));
+  const nextPage = Math.min(totalPages, Math.max(1, state.importPage + delta));
+  if (nextPage === state.importPage) return;
+  state.importPage = nextPage;
+  renderImportList();
+}
+
+function handleImportListAction(event) {
+  const actionTarget = event.target.closest("[data-import-action]");
+  if (!actionTarget) return;
+  const importId = actionTarget.dataset.importId;
+  if (!importId) return;
+  if (actionTarget.dataset.importAction === "view") {
+    void openImportDetail(importId);
+  }
+}
+
+async function openImportDetail(importId) {
+  if (!elements.importDetailWindow) return;
+  const record = state.imports.find((item) => item.id === importId);
+  if (!record) return;
+  if (elements.importDetailTitle) {
+    elements.importDetailTitle.textContent = record.title || "导入对话";
+  }
+  const metaParts = [];
+  const sourceLabel = getImportSourceLabel(record.source);
+  if (sourceLabel) metaParts.push(`来源：${sourceLabel}`);
+  if (record.createdAt) metaParts.push(`时间：${formatDateTime(record.createdAt)}`);
+  if (record.userCount != null && record.assistantCount != null) {
+    metaParts.push(`用户 ${record.userCount} / 对方 ${record.assistantCount}`);
+  }
+  if (record.messageCount != null) metaParts.push(`共 ${record.messageCount} 条`);
+  if (elements.importDetailMeta) {
+    elements.importDetailMeta.textContent = metaParts.join(" · ");
+  }
+
+  const messages = await getAllFromIndex("importMessages", "importId", importId);
+  messages.sort((a, b) => a.createdAt - b.createdAt);
+  elements.importDetailWindow.innerHTML = "";
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty";
+    empty.textContent = "暂无内容";
+    elements.importDetailWindow.appendChild(empty);
+  } else {
+    messages.forEach((message) => {
+      elements.importDetailWindow.appendChild(createMessageElement(message));
+    });
+  }
+  openImportDetailModal(true);
+}
+
 function dedupeAnalyses(analyses) {
   const byMessage = new Map();
   analyses.forEach((record) => {
@@ -1036,6 +1658,16 @@ function dedupeAnalyses(analyses) {
     }
   });
   return Array.from(byMessage.values());
+}
+
+async function loadIncludedAnalyses() {
+  const [{ conversationIncludeMap, importIncludeMap }, analyses] = await Promise.all([
+    loadIncludeMaps(),
+    getAllRecords("analyses"),
+  ]);
+  return dedupeAnalyses(analyses).filter((record) =>
+    isAnalysisIncluded(record, conversationIncludeMap, importIncludeMap)
+  );
 }
 
 function renderCountList(target, countMap) {
@@ -1112,7 +1744,7 @@ async function renderCards() {
     return;
   }
   try {
-    const analyses = dedupeAnalyses(await getAllRecords("analyses"));
+    const analyses = await loadIncludedAnalyses();
     const base = buildCardBase(analyses);
     const language = elements.cardLangSelect.value;
     renderCardSection(elements.vocabCards, base.vocabCards, language, "vocab");
@@ -1323,7 +1955,7 @@ function cardId(type, key) {
 }
 
 async function handleGeneratePractice() {
-  const analysisRecords = Array.from(state.analyses.values())
+  const analysisRecords = (await loadIncludedAnalyses())
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 6);
   if (!analysisRecords.length) {
@@ -1348,11 +1980,17 @@ async function handleGeneratePractice() {
     return;
   }
 
+  const conversationMap = new Map(
+    analysisRecords.map((record) => [record.messageId, record.conversationId])
+  );
   const records = [];
   for (const task of tasks) {
+    const mappedConversationId = task.sourceMessageId
+      ? conversationMap.get(task.sourceMessageId)
+      : null;
     const record = {
       id: makeId(),
-      conversationId: state.conversationId,
+      conversationId: mappedConversationId || state.conversationId,
       sourceMessageId: task.sourceMessageId || null,
       type: task.type || "recall",
       prompt: task.prompt,
@@ -1367,8 +2005,8 @@ async function handleGeneratePractice() {
     records.push(record);
   }
   state.practice = [...records, ...state.practice].sort((a, b) => b.createdAt - a.createdAt);
-  renderPractice();
-  refreshStats();
+  await renderPractice();
+  await refreshStats();
 }
 
 async function handleEnrichCards() {
@@ -1381,7 +2019,7 @@ async function handleEnrichCards() {
   elements.enrichCardsBtn.disabled = true;
   await loadCardTranslations();
   try {
-    const analyses = dedupeAnalyses(await getAllRecords("analyses"));
+    const analyses = await loadIncludedAnalyses();
     const base = buildCardBase(analyses);
     const language = elements.cardLangSelect.value;
     const missing = collectMissingCards(base, language);
@@ -1523,14 +2161,26 @@ function setCardStatus(text) {
   }
 }
 
-function renderPractice() {
+async function renderPractice() {
+  if (!elements.practiceList) return;
   elements.practiceList.innerHTML = "";
-  if (!state.practice.length) {
-    elements.practiceMeta.textContent = "暂无练习任务，可从你的语句生成。";
+  const { conversationIncludeMap, importIncludeMap } = await loadIncludeMaps();
+  const tasks = state.practice
+    .filter((task) => {
+      const importId = getImportIdFromConversationId(task.conversationId);
+      if (importId) {
+        return isImportIncluded(importId, importIncludeMap, task.conversationId);
+      }
+      return isConversationIncluded(task.conversationId, conversationIncludeMap);
+    })
+    .sort((a, b) => b.createdAt - a.createdAt);
+  if (!tasks.length) {
+    elements.practiceMeta.textContent = state.practice.length
+      ? "已排除的会话不参与练习。"
+      : "暂无练习任务，可从你的语句生成。";
     return;
   }
-  elements.practiceMeta.textContent = `已准备 ${state.practice.length} 个任务。`;
-  const tasks = [...state.practice].sort((a, b) => b.createdAt - a.createdAt);
+  elements.practiceMeta.textContent = `已准备 ${tasks.length} 个任务。`;
   tasks.forEach((task) => {
     const card = document.createElement("div");
     card.className = "practice-card";
@@ -2022,8 +2672,15 @@ async function handleConfirmImport() {
   elements.confirmImportBtn.disabled = true;
   const originalText = elements.confirmImportBtn.textContent;
   elements.confirmImportBtn.textContent = "导入中...";
+  elements.importMeta.textContent = "正在保存导入内容...";
+  await delay(0);
   try {
-    await importMessages(mapped);
+    await saveImportSession(mapped, {
+      analyze: settings.autoAnalyze,
+      onProgress: ({ saved, total }) => {
+        elements.importMeta.textContent = `正在保存 ${saved}/${total} 条...`;
+      },
+    });
     elements.importInput.value = "";
     updateImportPreview();
     openImportModal(false);
@@ -2068,28 +2725,59 @@ function buildImportMessages() {
     }));
 }
 
-async function importMessages(messages) {
+async function saveImportSession(messages, { analyze = true, onProgress } = {}) {
   if (!messages.length) return;
   const createdAtBase = Date.now();
+  const importId = makeId();
+  const userCount = messages.filter((message) => message.role === "user").length;
+  const assistantCount = messages.length - userCount;
+  const source = importState.source || "";
+  const session = {
+    id: importId,
+    title: buildImportTitle(source, createdAtBase),
+    source,
+    mode: importState.detectedMode,
+    split: importState.split,
+    createdAt: createdAtBase,
+    messageCount: messages.length,
+    userCount,
+    assistantCount,
+    includeInStats: true,
+  };
   const records = messages.map((message, index) => ({
     id: makeId(),
-    conversationId: state.conversationId,
+    importId,
+    conversationId: `import:${importId}`,
     role: message.role,
     text: message.text,
     createdAt: createdAtBase + index,
   }));
-  for (const record of records) {
-    await addRecord("messages", record);
+  await addRecord("imports", session);
+  const total = records.length;
+  let saved = 0;
+  const batchSize = 50;
+  onProgress?.({ saved, total });
+  for (let i = 0; i < records.length; i += batchSize) {
+    const batch = records.slice(i, i + batchSize);
+    await addImportMessagesBatch(batch);
+    saved += batch.length;
+    onProgress?.({ saved, total });
+    if (i % (batchSize * 2) === 0) {
+      await delay(0);
+    }
   }
-  state.messages = [...state.messages, ...records].sort((a, b) => a.createdAt - b.createdAt);
-  renderMessages();
 
-  if (settings.autoAnalyze) {
-    await analyzeImportedMessages(records);
+  void refreshStats();
+  void refreshImports({ page: 1 });
+  void renderPractice();
+  if (analyze) {
+    void analyzeImportedMessages(records).then(async () => {
+      await refreshStats();
+      await refreshCards();
+    });
+  } else {
+    void refreshCards();
   }
-  await refreshStats();
-  renderPractice();
-  await refreshCards();
 }
 
 async function analyzeImportedMessages(records) {
@@ -2229,7 +2917,7 @@ function isFileOrigin() {
 function parseDoubaoShareHtml(html) {
   if (!/doubao\.com\/thread\//i.test(html)) return null;
   const args = findLargestDataFnArgs(html);
-  if (!args) return { source: "doubao", entries: [], notice: "未找到可解析的数据。"};
+  if (!args) return { source: "doubao", entries: [], notice: "未找到可解析的数据。" };
   let parsed;
   try {
     parsed = safeParseJson(decodeHtmlEntities(args));
@@ -2470,6 +3158,12 @@ function getImportSourceLabel(source) {
     unknown: "",
   };
   return labels[source] || source || "";
+}
+
+function buildImportTitle(source, timestamp) {
+  const label = getImportSourceLabel(source);
+  if (label) return `${label} 导入`;
+  return `导入 ${new Date(timestamp).toLocaleDateString()}`;
 }
 
 function normalizeImportRole(role, swap) {
@@ -2785,7 +3479,19 @@ async function openDb() {
   openDb.promise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    request.onblocked = () => {
+      console.warn("Database upgrade blocked. Please close other tabs.");
+      alert("请关闭本应用的其他标签页以完成数据库更新，否则功能可能无法使用。");
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        console.warn("Database version changed. Connection closed.");
+        alert("数据库版本已更新，请刷新页面。");
+      };
+      resolve(db);
+    };
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains("conversations")) {
@@ -2813,6 +3519,18 @@ async function openDb() {
         store.createIndex("type", "type", { unique: false });
         store.createIndex("updatedAt", "updatedAt", { unique: false });
       }
+      if (!db.objectStoreNames.contains("appMeta")) {
+        db.createObjectStore("appMeta", { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains("imports")) {
+        const store = db.createObjectStore("imports", { keyPath: "id" });
+        store.createIndex("createdAt", "createdAt", { unique: false });
+      }
+      if (!db.objectStoreNames.contains("importMessages")) {
+        const store = db.createObjectStore("importMessages", { keyPath: "id" });
+        store.createIndex("importId", "importId", { unique: false });
+        store.createIndex("createdAt", "createdAt", { unique: false });
+      }
     };
   });
   return openDb.promise;
@@ -2823,6 +3541,7 @@ async function createConversation() {
     id: makeId(),
     title: `会话 ${new Date().toLocaleDateString()}`,
     createdAt: Date.now(),
+    includeInStats: true,
   };
   await addRecord("conversations", conversation);
   return conversation;
@@ -2869,6 +3588,14 @@ async function updateRecord(storeName, record) {
   await transactionDone(tx);
 }
 
+async function addImportMessagesBatch(records) {
+  const db = await openDb();
+  const tx = db.transaction("importMessages", "readwrite");
+  const messageStore = tx.objectStore("importMessages");
+  records.forEach((record) => messageStore.add(record));
+  await transactionDone(tx);
+}
+
 async function getRecord(storeName, key) {
   const db = await openDb();
   const tx = db.transaction(storeName, "readonly");
@@ -2910,7 +3637,22 @@ function requestToPromise(request) {
 function transactionDone(tx) {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
+    tx.onerror = () => {
+      console.error("[DB] Transaction error", tx.error);
+      reject(tx.error);
+    };
+    tx.onabort = () => {
+      console.error("[DB] Transaction aborted", tx.error);
+      reject(tx.error);
+    };
   });
+}
+
+async function getMetaValue(key) {
+  const record = await getRecord("appMeta", key);
+  return record ? record.value : null;
+}
+
+async function setMetaValue(key, value) {
+  await updateRecord("appMeta", { key, value });
 }
