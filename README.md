@@ -6,6 +6,10 @@
 
 直接用浏览器打开 `index.html`。语音识别建议使用 Chrome 或 Edge。
 
+如需粘贴分享链接自动抓取，请使用 Node.js 18+ 启动本地服务：
+1. `node server.js`
+2. 浏览器访问 `http://localhost:4173`
+
 ## 设置
 
 - 点击 `设置`，填入 DeepSeek API 密钥。

@@ -594,6 +594,98 @@ button {
   gap: 16px;
 }
 
+.import-card {
+  width: min(980px, 100%);
+}
+
+.import-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.import-controls {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.import-mapping {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.import-mapping .mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.import-mapping select {
+  border: 1px solid rgba(31, 42, 51, 0.15);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.import-meta {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.import-preview {
+  display: grid;
+  gap: 12px;
+}
+
+.import-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.import-preview-window {
+  max-height: 320px;
+  min-height: 220px;
+}
+
+.import-preview-window .meta {
+  display: none;
+}
+
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--paper-2);
+}
+
+.segmented label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.segmented input {
+  accent-color: var(--accent);
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -680,5 +772,13 @@ button {
 
   .chat-window {
     max-height: 360px;
+  }
+
+  .import-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .import-preview-window {
+    max-height: 280px;
   }
 }

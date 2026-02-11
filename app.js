@@ -229,10 +229,31 @@ const state = {
   isSending: false,
   isReanalyzing: false,
   isEnriching: false,
+  isImporting: false,
   cardTranslations: new Map(),
   recognition: null,
   micActive: false,
 };
+
+const importState = {
+  raw: "",
+  mode: "auto",
+  split: "line",
+  detectedMode: "alternate",
+  speakers: [],
+  userSpeaker: null,
+  firstRole: "user",
+  directSwap: false,
+  source: "",
+  notice: "",
+  fetching: false,
+  fetchUrl: "",
+  fetchedHtml: "",
+  fetchError: "",
+  parsed: [],
+};
+
+const IMPORT_PREVIEW_LIMIT = 30;
 
 const el = (id) => document.getElementById(id);
 
@@ -264,6 +285,18 @@ const elements = {
   speechLangSelect: el("speechLangSelect"),
   newSessionBtn: el("newSessionBtn"),
   exportBtn: el("exportBtn"),
+  importBtn: el("importBtn"),
+  importModal: el("importModal"),
+  closeImportBtn: el("closeImportBtn"),
+  cancelImportBtn: el("cancelImportBtn"),
+  confirmImportBtn: el("confirmImportBtn"),
+  importInput: el("importInput"),
+  importModeSelect: el("importModeSelect"),
+  importSplitSelect: el("importSplitSelect"),
+  importMapping: el("importMapping"),
+  importMeta: el("importMeta"),
+  importPreviewWindow: el("importPreviewWindow"),
+  swapImportRolesBtn: el("swapImportRolesBtn"),
   refreshStatsBtn: el("refreshStatsBtn"),
   reanalyzeBtn: el("reanalyzeBtn"),
   generatePracticeBtn: el("generatePracticeBtn"),
@@ -346,6 +379,15 @@ function bindEvents() {
   elements.saveSettingsBtn.addEventListener("click", saveSettingsFromUI);
   elements.newSessionBtn.addEventListener("click", handleNewSession);
   elements.exportBtn.addEventListener("click", exportData);
+  elements.importBtn.addEventListener("click", () => openImportModal(true));
+  elements.closeImportBtn.addEventListener("click", () => openImportModal(false));
+  elements.cancelImportBtn.addEventListener("click", () => openImportModal(false));
+  elements.importInput.addEventListener("input", updateImportPreview);
+  elements.importModeSelect.addEventListener("change", updateImportPreview);
+  elements.importSplitSelect.addEventListener("change", updateImportPreview);
+  elements.importMapping.addEventListener("change", handleImportMappingChange);
+  elements.swapImportRolesBtn.addEventListener("click", handleSwapImportRoles);
+  elements.confirmImportBtn.addEventListener("click", handleConfirmImport);
   elements.refreshStatsBtn.addEventListener("click", refreshStats);
   elements.reanalyzeBtn.addEventListener("click", handleReanalyzeAll);
   elements.generatePracticeBtn.addEventListener("click", handleGeneratePractice);
@@ -378,6 +420,15 @@ function switchPanel(panelName) {
 function openModal(show) {
   elements.settingsModal.classList.toggle("show", show);
   elements.settingsModal.setAttribute("aria-hidden", String(!show));
+}
+
+function openImportModal(show) {
+  elements.importModal.classList.toggle("show", show);
+  elements.importModal.setAttribute("aria-hidden", String(!show));
+  if (show) {
+    updateImportPreview();
+    elements.importInput.focus();
+  }
 }
 
 function loadSettings() {
@@ -1707,6 +1758,1024 @@ async function exportData() {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function updateImportPreview() {
+  if (!elements.importInput) return;
+  const inputValue = elements.importInput.value || "";
+  const trimmedInput = inputValue.trim();
+  importState.raw = inputValue;
+  importState.mode = elements.importModeSelect.value;
+  importState.split = elements.importSplitSelect.value;
+  importState.notice = "";
+  importState.source = "";
+  const previousDirectSwap = importState.directSwap;
+
+  const shareUrl = matchShareUrl(trimmedInput);
+  if (shareUrl) {
+    if (importState.fetchUrl !== shareUrl) {
+      importState.fetchedHtml = "";
+      importState.fetchError = "";
+    }
+    void ensureShareHtml(shareUrl);
+    if (importState.fetchUrl === shareUrl && importState.fetchedHtml) {
+      importState.raw = importState.fetchedHtml;
+    }
+    if (importState.fetching) {
+      importState.notice = "正在抓取分享页...";
+    } else if (importState.fetchError) {
+      importState.notice = importState.fetchError;
+    }
+  } else {
+    importState.fetchUrl = "";
+    importState.fetchedHtml = "";
+    importState.fetchError = "";
+    importState.fetching = false;
+  }
+
+  const shareResult = parseShareImport(importState.raw);
+  let result;
+  if (shareResult) {
+    importState.detectedMode = "direct";
+    importState.parsed = shareResult.entries || [];
+    importState.speakers = [];
+    importState.userSpeaker = null;
+    importState.source = shareResult.source || "";
+    importState.notice = shareResult.notice || "";
+    if (shareUrl) {
+      if (importState.fetchError) {
+        importState.notice = importState.fetchError;
+      } else if (importState.fetching && !importState.fetchedHtml) {
+        importState.notice = "正在抓取分享页...";
+      }
+    }
+    importState.directSwap = previousDirectSwap;
+    result = {
+      mode: importState.detectedMode,
+      speakers: importState.speakers,
+      entries: importState.parsed,
+      ignored: 0,
+    };
+  } else {
+    result = parseImportText(importState.raw, {
+      mode: importState.mode,
+      split: importState.split,
+    });
+
+    importState.detectedMode = result.mode;
+    importState.speakers = result.speakers;
+    importState.parsed = result.entries;
+
+    if (importState.detectedMode === "speaker") {
+      if (!importState.userSpeaker || !importState.speakers.includes(importState.userSpeaker)) {
+        importState.userSpeaker = importState.speakers[0] || null;
+      }
+    }
+
+    if (importState.detectedMode === "alternate" && !importState.firstRole) {
+      importState.firstRole = "user";
+    }
+  }
+
+  renderImportMapping();
+  const mapped = buildImportMessages();
+  renderImportPreview(mapped);
+  updateImportMeta(result, mapped);
+
+  const canSwap =
+    importState.detectedMode === "alternate" ||
+    (importState.detectedMode === "speaker" && importState.speakers.length === 2) ||
+    importState.detectedMode === "direct";
+  elements.swapImportRolesBtn.disabled = !canSwap;
+  elements.confirmImportBtn.disabled =
+    mapped.length === 0 || state.isImporting || importState.fetching;
+}
+
+function renderImportMapping() {
+  elements.importMapping.innerHTML = "";
+  if (!importState.raw.trim()) {
+    return;
+  }
+
+  if (importState.detectedMode === "direct") {
+    const row = document.createElement("div");
+    row.className = "mapping-row";
+    const label = document.createElement("span");
+    const sourceLabel = getImportSourceLabel(importState.source);
+    if (importState.parsed.length) {
+      label.textContent = sourceLabel ? `已识别分享页：${sourceLabel}` : "已识别对话角色";
+    } else {
+      label.textContent = importState.notice || "未识别到可导入的分享页内容。";
+    }
+    row.appendChild(label);
+    elements.importMapping.appendChild(row);
+    return;
+  }
+
+  if (importState.detectedMode === "speaker") {
+    const row = document.createElement("div");
+    row.className = "mapping-row";
+    const label = document.createElement("span");
+    label.textContent = "用户说话人";
+    const select = document.createElement("select");
+    select.id = "importUserSpeakerSelect";
+    if (!importState.speakers.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "未识别到名字";
+      select.appendChild(option);
+      select.disabled = true;
+    } else {
+      importState.speakers.forEach((speaker) => {
+        const option = document.createElement("option");
+        option.value = speaker;
+        option.textContent = speaker;
+        option.selected = speaker === importState.userSpeaker;
+        select.appendChild(option);
+      });
+    }
+    row.appendChild(label);
+    row.appendChild(select);
+    elements.importMapping.appendChild(row);
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "未选中的说话人会归为「对方」。";
+    elements.importMapping.appendChild(hint);
+    return;
+  }
+
+  if (importState.detectedMode === "alternate") {
+    const row = document.createElement("div");
+    row.className = "mapping-row";
+    const label = document.createElement("span");
+    label.textContent = "第一句是谁说的";
+    const segmented = document.createElement("div");
+    segmented.className = "segmented";
+    const options = [
+      { value: "user", label: "我" },
+      { value: "assistant", label: "对方" },
+    ];
+    options.forEach((option) => {
+      const tag = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "importFirstRole";
+      input.value = option.value;
+      input.checked = importState.firstRole === option.value;
+      tag.appendChild(input);
+      tag.appendChild(document.createTextNode(option.label));
+      segmented.appendChild(tag);
+    });
+    row.appendChild(label);
+    row.appendChild(segmented);
+    elements.importMapping.appendChild(row);
+  }
+}
+
+function renderImportPreview(mapped) {
+  elements.importPreviewWindow.innerHTML = "";
+  if (!mapped.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty";
+    empty.textContent = "粘贴对话后会显示识别预览。";
+    elements.importPreviewWindow.appendChild(empty);
+    return;
+  }
+  const preview = mapped.slice(0, IMPORT_PREVIEW_LIMIT).map((message, index) => ({
+    id: `preview-${index}`,
+    role: message.role,
+    text: message.text,
+    createdAt: null,
+  }));
+  preview.forEach((message) => {
+    elements.importPreviewWindow.appendChild(createMessageElement(message));
+  });
+}
+
+function updateImportMeta(result, mapped) {
+  if (!importState.raw.trim()) {
+    elements.importMeta.textContent = "粘贴对话后会显示识别结果。";
+    return;
+  }
+  if (!mapped.length) {
+    elements.importMeta.textContent =
+      importState.notice || "未识别到可导入的消息，请调整识别方式或检查格式。";
+    return;
+  }
+  const userCount = mapped.filter((message) => message.role === "user").length;
+  const assistantCount = mapped.length - userCount;
+  const modeLabel =
+    importState.detectedMode === "direct"
+      ? "分享页解析"
+      : importState.detectedMode === "speaker"
+        ? "按说话人"
+        : "按行交替";
+  const ignoredInfo = result.ignored ? ` · 已忽略 ${result.ignored} 行` : "";
+  const speakerInfo = importState.speakers.length
+    ? ` · 说话人：${importState.speakers.join("、")}`
+    : "";
+  const sourceLabel = getImportSourceLabel(importState.source);
+  const sourceInfo = sourceLabel ? ` · 来源：${sourceLabel}` : "";
+  const previewInfo =
+    mapped.length > IMPORT_PREVIEW_LIMIT ? ` · 预览前 ${IMPORT_PREVIEW_LIMIT} 条` : "";
+  const noticeInfo = importState.notice ? ` · ${importState.notice}` : "";
+  elements.importMeta.textContent = `识别 ${mapped.length} 条：用户 ${userCount} / 对方 ${assistantCount} · ${modeLabel}${sourceInfo}${speakerInfo}${ignoredInfo}${previewInfo}${noticeInfo}`;
+}
+
+function handleImportMappingChange(event) {
+  if (event.target.id === "importUserSpeakerSelect") {
+    importState.userSpeaker = event.target.value;
+    updateImportPreview();
+    return;
+  }
+  if (event.target.name === "importFirstRole") {
+    importState.firstRole = event.target.value;
+    updateImportPreview();
+  }
+}
+
+function handleSwapImportRoles() {
+  if (importState.detectedMode === "direct") {
+    importState.directSwap = !importState.directSwap;
+    updateImportPreview();
+    return;
+  }
+  if (importState.detectedMode === "alternate") {
+    importState.firstRole = importState.firstRole === "user" ? "assistant" : "user";
+    updateImportPreview();
+    return;
+  }
+  if (importState.detectedMode === "speaker" && importState.speakers.length === 2) {
+    const next = importState.speakers.find((speaker) => speaker !== importState.userSpeaker);
+    if (next) {
+      importState.userSpeaker = next;
+      updateImportPreview();
+    }
+  }
+}
+
+async function handleConfirmImport() {
+  if (state.isImporting) return;
+  const mapped = buildImportMessages();
+  if (!mapped.length) return;
+  state.isImporting = true;
+  elements.confirmImportBtn.disabled = true;
+  const originalText = elements.confirmImportBtn.textContent;
+  elements.confirmImportBtn.textContent = "导入中...";
+  try {
+    await importMessages(mapped);
+    elements.importInput.value = "";
+    updateImportPreview();
+    openImportModal(false);
+  } catch (error) {
+    console.error(error);
+    elements.importMeta.textContent = "导入失败，请检查格式后重试。";
+  } finally {
+    state.isImporting = false;
+    elements.confirmImportBtn.textContent = originalText;
+  }
+}
+
+function buildImportMessages() {
+  if (!importState.parsed.length) {
+    return [];
+  }
+  if (importState.detectedMode === "direct") {
+    return importState.parsed
+      .filter((entry) => entry.text && entry.text.trim())
+      .map((entry) => {
+        const role = normalizeImportRole(entry.role, importState.directSwap);
+        if (!role) return null;
+        return { role, text: entry.text };
+      })
+      .filter(Boolean);
+  }
+  if (importState.detectedMode === "speaker") {
+    const userSpeaker = importState.userSpeaker || importState.speakers[0];
+    return importState.parsed
+      .filter((entry) => entry.text && entry.text.trim())
+      .map((entry) => ({
+        role: entry.speaker === userSpeaker ? "user" : "assistant",
+        text: entry.text,
+      }));
+  }
+  const firstRole = importState.firstRole === "assistant" ? "assistant" : "user";
+  return importState.parsed
+    .filter((entry) => entry.text && entry.text.trim())
+    .map((entry, index) => ({
+      role: index % 2 === 0 ? firstRole : firstRole === "user" ? "assistant" : "user",
+      text: entry.text,
+    }));
+}
+
+async function importMessages(messages) {
+  if (!messages.length) return;
+  const createdAtBase = Date.now();
+  const records = messages.map((message, index) => ({
+    id: makeId(),
+    conversationId: state.conversationId,
+    role: message.role,
+    text: message.text,
+    createdAt: createdAtBase + index,
+  }));
+  for (const record of records) {
+    await addRecord("messages", record);
+  }
+  state.messages = [...state.messages, ...records].sort((a, b) => a.createdAt - b.createdAt);
+  renderMessages();
+
+  if (settings.autoAnalyze) {
+    await analyzeImportedMessages(records);
+  }
+  await refreshStats();
+  renderPractice();
+  await refreshCards();
+}
+
+async function analyzeImportedMessages(records) {
+  const userMessages = records.filter((record) => record.role === "user");
+  if (!userMessages.length) {
+    return;
+  }
+  updateAnalysisStatus({ running: true });
+  try {
+    const total = userMessages.length;
+    for (let i = 0; i < total; i += 1) {
+      const message = userMessages[i];
+      elements.analysisStatus.textContent = `分析：导入 ${i + 1}/${total}`;
+      const analysis = await computeAnalysis(message.text);
+      await saveAnalysisForMessage(message, analysis);
+      if (i % 5 === 0) {
+        await delay(0);
+      }
+    }
+  } catch (error) {
+    console.error(error);
+    updateAnalysisStatus({ failed: true });
+    return;
+  }
+  updateAnalysisStatus();
+}
+
+function parseShareImport(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (looksLikeHtml(trimmed)) {
+    const doubao = parseDoubaoShareHtml(trimmed);
+    if (doubao) return doubao;
+    const chatgpt = parseChatGptShareHtml(trimmed);
+    if (chatgpt) return chatgpt;
+    const gemini = parseGeminiShareHtml(trimmed);
+    if (gemini) return gemini;
+    return {
+      source: "unknown",
+      entries: [],
+      notice: "检测到 HTML，但未识别分享页格式。",
+    };
+  }
+  const shareUrl = matchShareUrl(trimmed);
+  if (!shareUrl) return null;
+  const source = detectShareSource(shareUrl);
+  return {
+    source,
+    entries: [],
+    notice: "检测到分享链接，正在尝试抓取页面内容。",
+  };
+}
+
+async function ensureShareHtml(url) {
+  if (importState.fetchUrl === url && importState.fetchedHtml) {
+    return importState.fetchedHtml;
+  }
+  if (importState.fetching && importState.fetchUrl === url) {
+    return null;
+  }
+  importState.fetching = true;
+  importState.fetchUrl = url;
+  importState.fetchError = "";
+  try {
+    const html = await fetchShareHtml(url);
+    if (importState.fetchUrl !== url) {
+      return null;
+    }
+    importState.fetchedHtml = html;
+    importState.fetching = false;
+    importState.fetchError = "";
+    updateImportPreview();
+    return html;
+  } catch (error) {
+    if (importState.fetchUrl !== url) {
+      return null;
+    }
+    importState.fetching = false;
+    importState.fetchedHtml = "";
+    importState.fetchError = buildFetchErrorNotice(error);
+    updateImportPreview();
+    return null;
+  }
+}
+
+async function fetchShareHtml(url) {
+  const errors = [];
+  if (!isFileOrigin()) {
+    try {
+      return await fetchViaProxy(url);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    return await fetchDirect(url);
+  } catch (error) {
+    errors.push(error);
+  }
+  throw errors[errors.length - 1] || new Error("fetch_failed");
+}
+
+async function fetchViaProxy(url) {
+  const response = await fetch(`/proxy?url=${encodeURIComponent(url)}`);
+  if (!response.ok) {
+    const error = new Error("proxy_unavailable");
+    error.status = response.status;
+    throw error;
+  }
+  return response.text();
+}
+
+async function fetchDirect(url) {
+  const response = await fetch(url, { mode: "cors", credentials: "omit" });
+  if (!response.ok) {
+    const error = new Error("direct_fetch_failed");
+    error.status = response.status;
+    throw error;
+  }
+  return response.text();
+}
+
+function buildFetchErrorNotice(error) {
+  if (isFileOrigin()) {
+    return "当前以文件方式打开，无法跨域抓取。请运行 `node server.js` 后访问 `http://localhost:4173`。";
+  }
+  if (error && error.status === 403) {
+    return "抓取被拒绝，请确认链接可公开访问。";
+  }
+  return "自动抓取失败，可能是跨域限制。请运行 `node server.js` 后访问 `http://localhost:4173` 再试。";
+}
+
+function isFileOrigin() {
+  return window.location.protocol === "file:";
+}
+
+function parseDoubaoShareHtml(html) {
+  if (!/doubao\.com\/thread\//i.test(html)) return null;
+  const args = findLargestDataFnArgs(html);
+  if (!args) return { source: "doubao", entries: [], notice: "未找到可解析的数据。"};
+  let parsed;
+  try {
+    parsed = safeParseJson(decodeHtmlEntities(args));
+  } catch (error) {
+    return { source: "doubao", entries: [], notice: "分享页数据解析失败。" };
+  }
+  const messageList = parsed?.[2]?.data?.message_snapshot?.message_list;
+  if (!Array.isArray(messageList)) {
+    return { source: "doubao", entries: [], notice: "未识别到对话内容。" };
+  }
+  const entries = messageList
+    .map((item) => {
+      let text = "";
+      let content = item?.content;
+      if (typeof content === "string") {
+        try {
+          content = safeParseJson(content);
+        } catch (error) {
+          content = null;
+        }
+      }
+      if (content && typeof content === "object" && content.text) {
+        text = String(content.text).trim();
+      } else if (typeof item?.content === "string") {
+        text = item.content.trim();
+      }
+      if (!text) return null;
+      const role = item?.user_type === 1 ? "user" : "assistant";
+      return { role, text, index: item?.index ?? 0 };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.index - b.index)
+    .map(({ role, text }) => ({ role, text }));
+  if (!entries.length) {
+    return { source: "doubao", entries: [], notice: "未识别到可导入的对话内容。" };
+  }
+  return { source: "doubao", entries };
+}
+
+function parseChatGptShareHtml(html) {
+  if (!/(chatgpt\.com|chat\.openai\.com)\/share\//i.test(html)) return null;
+  const pool = extractChatGptSharePool(html);
+  if (!pool) {
+    return { source: "chatgpt", entries: [], notice: "未找到对话数据。" };
+  }
+  const root = decodeReactRouterData(pool);
+  const entries = extractChatGptMessages(root);
+  if (!entries.length) {
+    return { source: "chatgpt", entries: [], notice: "未识别到可导入的对话内容。" };
+  }
+  return { source: "chatgpt", entries };
+}
+
+function extractChatGptSharePool(html) {
+  const regex = /streamController\.enqueue\("((?:\\.|[^"\\])*)"\)/g;
+  let bestPool = null;
+  let bestLength = 0;
+  let match;
+  while ((match = regex.exec(html))) {
+    const decoded = decodeJsStringLiteral(match[1]);
+    let parsed;
+    try {
+      parsed = JSON.parse(decoded);
+    } catch (error) {
+      continue;
+    }
+    if (!Array.isArray(parsed)) {
+      continue;
+    }
+    if (decoded.length > bestLength) {
+      bestLength = decoded.length;
+      bestPool = parsed;
+    }
+  }
+  return bestPool;
+}
+
+function parseGeminiShareHtml(html) {
+  if (!/gemini\.google\.com\/share\//i.test(html)) return null;
+  return {
+    source: "gemini",
+    entries: [],
+    notice: "Gemini 分享页内容为动态加载，请使用“复制对话内容”后粘贴。",
+  };
+}
+
+function extractChatGptMessages(root) {
+  const mapping = root?.mapping;
+  const currentNode = root?.current_node;
+  if (!mapping || !currentNode) return [];
+  const path = [];
+  const seen = new Set();
+  let nodeId = currentNode;
+  while (nodeId && mapping[nodeId] && !seen.has(nodeId)) {
+    seen.add(nodeId);
+    path.push(mapping[nodeId]);
+    nodeId = mapping[nodeId].parent;
+  }
+  path.reverse();
+  const entries = [];
+  path.forEach((node) => {
+    const message = node?.message;
+    if (!message) return;
+    const role = message?.author?.role;
+    if (role !== "user" && role !== "assistant") return;
+    const metadata = message?.metadata || {};
+    if (metadata.is_user_system_message || metadata.is_visually_hidden_from_conversation) {
+      return;
+    }
+    const parts = message?.content?.parts;
+    if (!Array.isArray(parts)) return;
+    const text = parts.filter((part) => typeof part === "string").join("\n").trim();
+    if (!text) return;
+    entries.push({ role, text });
+  });
+  return entries;
+}
+
+function decodeReactRouterData(pool) {
+  if (!Array.isArray(pool)) return null;
+  const serverIndex = pool.indexOf("serverResponse");
+  if (serverIndex === -1) return null;
+  const memo = new Map();
+  const inProgress = Symbol("inProgress");
+  const decodeIndex = (idx) => {
+    if (idx === -5 || idx == null || idx < 0 || idx >= pool.length) {
+      return null;
+    }
+    if (memo.has(idx)) {
+      const cached = memo.get(idx);
+      return cached === inProgress ? null : cached;
+    }
+    const item = pool[idx];
+    if (Array.isArray(item)) {
+      memo.set(idx, inProgress);
+      const result = item.map((entry) =>
+        typeof entry === "number" ? decodeIndex(entry) : entry
+      );
+      memo.set(idx, result);
+      return result;
+    }
+    if (item && typeof item === "object") {
+      memo.set(idx, inProgress);
+      const result = {};
+      const keys = Object.keys(item);
+      const isEncoded = keys.every((key) => key.startsWith("_"));
+      keys.forEach((key) => {
+        if (isEncoded) {
+          const keyIndex = Number(key.slice(1));
+          const keyName = pool[keyIndex];
+          if (typeof keyName !== "string") return;
+          const valueIndex = item[key];
+          result[keyName] =
+            typeof valueIndex === "number" ? decodeIndex(valueIndex) : valueIndex;
+        } else {
+          const value = item[key];
+          result[key] = typeof value === "number" ? decodeIndex(value) : value;
+        }
+      });
+      memo.set(idx, result);
+      return result;
+    }
+    memo.set(idx, item);
+    return item;
+  };
+  const wrapper = decodeIndex(serverIndex + 1);
+  return wrapper?.data || null;
+}
+
+function decodeJsStringLiteral(raw) {
+  let result = "";
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (ch !== "\\") {
+      result += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next === "u") {
+      const code = raw.slice(i + 2, i + 6);
+      if (/^[0-9a-fA-F]{4}$/.test(code)) {
+        result += String.fromCharCode(parseInt(code, 16));
+        i += 5;
+        continue;
+      }
+    }
+    const escapes = {
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      b: "\b",
+      f: "\f",
+      '"': "\"",
+      "\\": "\\",
+    };
+    if (escapes[next]) {
+      result += escapes[next];
+      i += 1;
+      continue;
+    }
+    result += next || "";
+    i += 1;
+  }
+  return result;
+}
+
+function decodeHtmlEntities(text) {
+  if (typeof document === "undefined") return text;
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = text;
+  return textarea.value;
+}
+
+function looksLikeHtml(text) {
+  return /<!doctype html|<html\b|<head\b|<body\b|<script\b/i.test(text);
+}
+
+function matchShareUrl(text) {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^https?:\/\/\S+$/);
+  if (!match) return null;
+  if (detectShareSource(trimmed) === "unknown") return null;
+  return trimmed;
+}
+
+function detectShareSource(text) {
+  if (/doubao\.com\/thread\//i.test(text)) return "doubao";
+  if (/(chatgpt\.com|chat\.openai\.com)\/share\//i.test(text)) return "chatgpt";
+  if (/gemini\.google\.com\/share\//i.test(text)) return "gemini";
+  return "unknown";
+}
+
+function getImportSourceLabel(source) {
+  const labels = {
+    doubao: "豆包",
+    chatgpt: "ChatGPT",
+    gemini: "Gemini",
+    unknown: "",
+  };
+  return labels[source] || source || "";
+}
+
+function normalizeImportRole(role, swap) {
+  let normalized = null;
+  if (role === "user") normalized = "user";
+  if (role === "assistant") normalized = "assistant";
+  if (!normalized) return null;
+  if (swap) {
+    return normalized === "user" ? "assistant" : "user";
+  }
+  return normalized;
+}
+
+function findLargestDataFnArgs(html) {
+  const regex = /data-fn-args=\"([^\"]+)\"/g;
+  let best = "";
+  let match;
+  while ((match = regex.exec(html))) {
+    if (match[1].length > best.length) {
+      best = match[1];
+    }
+  }
+  return best || null;
+}
+
+function parseImportText(raw, { mode = "auto", split = "line" } = {}) {
+  const lines = raw.split(/\r?\n/).map(sanitizeImportLine);
+  const stats = { ignored: 0 };
+  const detection = detectImportMode(lines, mode);
+  const parsedMode = detection.mode;
+  let entries = [];
+  if (parsedMode === "speaker") {
+    entries = parseSpeakerLines(lines, stats);
+  } else if (parsedMode === "alternate") {
+    entries = parseAlternateLines(lines, split, stats);
+  }
+  const speakers = parsedMode === "speaker" ? collectSpeakers(entries) : detection.speakers;
+  return {
+    entries,
+    mode: parsedMode,
+    speakers,
+    ignored: stats.ignored,
+  };
+}
+
+function detectImportMode(lines, mode) {
+  if (mode === "alternate") {
+    return { mode: "alternate", speakers: [] };
+  }
+
+  const counts = new Map();
+  let labeledCount = 0;
+  let usableCount = 0;
+
+  lines.forEach((line) => {
+    if (!line) {
+      return;
+    }
+    if (isSeparatorLine(line) || looksLikeTimestamp(line)) {
+      return;
+    }
+    usableCount += 1;
+    const labeled = matchSpeakerLabel(line) || matchSpeakerHeader(line);
+    if (!labeled) {
+      return;
+    }
+    labeledCount += 1;
+    const speaker = labeled.speaker;
+    counts.set(speaker, (counts.get(speaker) || 0) + 1);
+  });
+
+  const speakers = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([speaker]) => speaker);
+
+  if (mode === "speaker") {
+    return { mode: "speaker", speakers };
+  }
+
+  const distinctSpeakers = speakers.length;
+  const ratio = usableCount ? labeledCount / usableCount : 0;
+  const repeated = Array.from(counts.values()).filter((count) => count >= 2).length;
+  const isSpeaker = distinctSpeakers >= 2 && (ratio >= 0.3 || repeated >= 1);
+  return { mode: isSpeaker ? "speaker" : "alternate", speakers };
+}
+
+function parseSpeakerLines(lines, stats) {
+  const entries = [];
+  let current = null;
+  let pendingSpeaker = null;
+
+  lines.forEach((line) => {
+    if (!line) {
+      stats.ignored += 1;
+      return;
+    }
+    if (isSeparatorLine(line) || looksLikeTimestamp(line)) {
+      stats.ignored += 1;
+      return;
+    }
+    const labeled = matchSpeakerLabel(line);
+    if (labeled) {
+      if (current) {
+        entries.push(current);
+      }
+      current = { speaker: labeled.speaker, text: labeled.text };
+      pendingSpeaker = null;
+      return;
+    }
+    const header = matchSpeakerHeader(line);
+    if (header) {
+      if (current) {
+        entries.push(current);
+        current = null;
+      }
+      pendingSpeaker = header.speaker;
+      return;
+    }
+    if (pendingSpeaker) {
+      current = { speaker: pendingSpeaker, text: line };
+      pendingSpeaker = null;
+      return;
+    }
+    if (current) {
+      current.text = `${current.text}\n${line}`;
+      return;
+    }
+    stats.ignored += 1;
+  });
+
+  if (current) {
+    entries.push(current);
+  }
+  return entries;
+}
+
+function parseAlternateLines(lines, splitMode, stats) {
+  const entries = [];
+  if (splitMode === "paragraph") {
+    let buffer = [];
+    lines.forEach((line) => {
+      if (!line) {
+        if (buffer.length) {
+          entries.push({ text: buffer.join("\n") });
+          buffer = [];
+        }
+        stats.ignored += 1;
+        return;
+      }
+      if (isSeparatorLine(line) || looksLikeTimestamp(line)) {
+        stats.ignored += 1;
+        return;
+      }
+      buffer.push(line);
+    });
+    if (buffer.length) {
+      entries.push({ text: buffer.join("\n") });
+    }
+    return entries;
+  }
+
+  lines.forEach((line) => {
+    if (!line) {
+      stats.ignored += 1;
+      return;
+    }
+    if (isSeparatorLine(line) || looksLikeTimestamp(line)) {
+      stats.ignored += 1;
+      return;
+    }
+    entries.push({ text: line });
+  });
+  return entries;
+}
+
+function collectSpeakers(entries) {
+  const counts = new Map();
+  entries.forEach((entry) => {
+    const speaker = entry.speaker;
+    if (!speaker) return;
+    counts.set(speaker, (counts.get(speaker) || 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([speaker]) => speaker);
+}
+
+function matchSpeakerLabel(line) {
+  if (!line || looksLikeTimestamp(line)) return null;
+  const patterns = [
+    {
+      regex:
+        /^\s*(\d{4}[./-]\d{1,2}[./-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]M)?)?)\s*[-–—]?\s*(.+?)\s*[:：]\s*(.+)$/,
+      speakerIndex: 2,
+      textIndex: 3,
+    },
+    {
+      regex:
+        /^\s*\[?(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]M)?)\]?\s*[-–—]?\s*(.+?)\s*[:：]\s*(.+)$/,
+      speakerIndex: 1,
+      textIndex: 2,
+    },
+    {
+      regex: /^\s*[\[【(（]\s*(.+?)\s*[\]】)）]\s*(.+)$/,
+      speakerIndex: 1,
+      textIndex: 2,
+    },
+    {
+      regex: /^\s*(.+?)\s*[:：]\s*(.+)$/,
+      speakerIndex: 1,
+      textIndex: 2,
+    },
+    {
+      regex: /^\s*(.+?)\s*[>»]\s*(.+)$/,
+      speakerIndex: 1,
+      textIndex: 2,
+    },
+  ];
+
+  for (const pattern of patterns) {
+    const match = line.match(pattern.regex);
+    if (!match) continue;
+    const speaker = normalizeSpeakerName(match[pattern.speakerIndex]);
+    const text = (match[pattern.textIndex] || "").trim();
+    if (!text) continue;
+    if (!looksLikeSpeaker(speaker)) continue;
+    if (looksLikeTimestamp(speaker)) continue;
+    return { speaker, text };
+  }
+  return null;
+}
+
+function matchSpeakerHeader(line) {
+  if (!line || looksLikeTimestamp(line)) return null;
+  const timeOnly = line.match(/^(.+?)\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?$/i);
+  if (timeOnly) {
+    const speaker = normalizeSpeakerName(timeOnly[1]);
+    if (looksLikeSpeaker(speaker)) {
+      return { speaker };
+    }
+  }
+  const dateTime = line.match(
+    /^(.+?)\s+\d{4}[./-]\d{1,2}[./-]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/i
+  );
+  if (dateTime) {
+    const speaker = normalizeSpeakerName(dateTime[1]);
+    if (looksLikeSpeaker(speaker)) {
+      return { speaker };
+    }
+  }
+  const colonOnly = line.match(/^(.+?)\s*[:：]\s*$/);
+  if (colonOnly) {
+    const speaker = normalizeSpeakerName(colonOnly[1]);
+    if (looksLikeSpeaker(speaker)) {
+      return { speaker };
+    }
+  }
+  return null;
+}
+
+function normalizeSpeakerName(name) {
+  return (name || "")
+    .replace(/^[\[\(（【]+/, "")
+    .replace(/[\]\)）】]+$/, "")
+    .trim();
+}
+
+function looksLikeSpeaker(name) {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return false;
+  if (trimmed.length > 24) return false;
+  if (looksLikeTimestamp(trimmed)) return false;
+  if (/https?:\/\//i.test(trimmed)) return false;
+  if (/[。！？?!]/.test(trimmed)) return false;
+  const words = trimmed.split(/\s+/);
+  if (words.length > 4) return false;
+  return true;
+}
+
+function isSeparatorLine(line) {
+  return /^[-=*_·•]{3,}$/.test(line);
+}
+
+function looksLikeTimestamp(text) {
+  if (!text) return false;
+  if (/^\d{1,2}:\d{2}(:\d{2})?(\s*[AP]M)?$/i.test(text)) {
+    return true;
+  }
+  if (/^(上午|下午|晚上|中午)\s*\d{1,2}:\d{2}$/.test(text)) {
+    return true;
+  }
+  if (
+    /^\d{4}[./-]\d{1,2}[./-]\d{1,2}(\s+\d{1,2}:\d{2}(:\d{2})?(\s*[AP]M)?)?$/i.test(
+      text
+    )
+  ) {
+    return true;
+  }
+  if (/^\d{4}年\d{1,2}月\d{1,2}日(\s+\d{1,2}:\d{2})?$/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function sanitizeImportLine(line) {
+  return (line || "").replace(/\u200b/g, "").trim();
 }
 
 async function openDb() {
