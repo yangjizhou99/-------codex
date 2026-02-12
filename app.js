@@ -6,6 +6,7 @@ const SETTINGS_KEY = "nativeLoop.settings";
 const LAST_CONVO_KEY = "nativeLoop.lastConversationId";
 const META_SETTINGS_KEY = "settings";
 const META_LAST_CONVO_KEY = "lastConversationId";
+const META_DEEP_HABITS_KEY = "deepHabits";
 
 const defaultSettings = {
   apiKey: "",
@@ -238,7 +239,11 @@ const state = {
   isReanalyzing: false,
   isEnriching: false,
   isImporting: false,
+  activeCardPanel: "vocab",
   cardTranslations: new Map(),
+  deepHabitPatterns: [],
+  cardSelection: new Set(),
+  cardBaseSnapshot: { vocabCards: [], phraseCards: [], patternCards: [] },
   recognition: null,
   micActive: false,
 };
@@ -273,6 +278,12 @@ const elements = {
     stats: el("panel-stats"),
     practice: el("panel-practice"),
     cards: el("panel-cards"),
+  },
+  cardSubTabs: Array.from(document.querySelectorAll(".card-subtab")),
+  cardSubPanels: {
+    vocab: el("card-subpanel-vocab"),
+    phrase: el("card-subpanel-phrase"),
+    pattern: el("card-subpanel-pattern"),
   },
   chatWindow: el("chatWindow"),
   chatEmpty: el("chatEmpty"),
@@ -313,9 +324,12 @@ const elements = {
   practiceMeta: el("practiceMeta"),
   cardLangSelect: el("cardLangSelect"),
   refreshCardsBtn: el("refreshCardsBtn"),
+  selectAllCardsBtn: el("selectAllCardsBtn"),
+  generateSelectedCardsBtn: el("generateSelectedCardsBtn"),
   enrichCardsBtn: el("enrichCardsBtn"),
   cardStatus: el("cardStatus"),
   vocabCards: el("vocabCards"),
+  phraseCards: el("phraseCards"),
   patternCards: el("patternCards"),
   statUtterances: el("statUtterances"),
   statAnalyzed: el("statAnalyzed"),
@@ -359,6 +373,7 @@ async function init() {
   await openDb();
   settings = await loadSettings();
   applySettingsToUI();
+  await loadDeepHabitsFromMeta();
   await initSegmenter();
   await loadConversation();
   renderMessages();
@@ -397,6 +412,10 @@ function bindEvents() {
   elements.tabs.forEach((tab) => {
     tab.addEventListener("click", () => switchPanel(tab.dataset.panel));
   });
+  elements.cardSubTabs.forEach((tab) => {
+    tab.addEventListener("click", () => switchCardSubPanel(tab.dataset.cardPanel));
+  });
+  switchCardSubPanel(state.activeCardPanel);
 
   elements.sendBtn.addEventListener("click", handleSend);
   elements.clearInput.addEventListener("click", () => {
@@ -448,12 +467,21 @@ function bindEvents() {
   elements.refreshCardsBtn.addEventListener("click", () => {
     refreshCards();
   });
+  if (elements.selectAllCardsBtn) {
+    elements.selectAllCardsBtn.addEventListener("click", handleToggleSelectAllCards);
+  }
+  if (elements.generateSelectedCardsBtn) {
+    elements.generateSelectedCardsBtn.addEventListener("click", handleEnrichSelectedCards);
+  }
   elements.enrichCardsBtn.addEventListener("click", handleEnrichCards);
   elements.cardLangSelect.addEventListener("change", () => {
     renderCards();
   });
-  elements.vocabCards.addEventListener("click", handleCardToggle);
-  elements.patternCards.addEventListener("click", handleCardToggle);
+  [elements.vocabCards, elements.phraseCards, elements.patternCards].forEach((container) => {
+    if (!container) return;
+    container.addEventListener("click", handleCardToggle);
+    container.addEventListener("change", handleCardSelectionChange);
+  });
   if (elements.conversationList) {
     elements.conversationList.addEventListener("click", handleConversationListAction);
     elements.conversationList.addEventListener("change", handleRecordToggleChange);
@@ -494,6 +522,7 @@ function switchPanel(panelName) {
     panel.classList.toggle("active", key === panelName);
   });
   if (panelName === "cards") {
+    switchCardSubPanel(state.activeCardPanel);
     refreshCards();
   }
   if (panelName === "stats") {
@@ -501,6 +530,20 @@ function switchPanel(panelName) {
     void refreshConversations();
     void refreshImports();
   }
+}
+
+function switchCardSubPanel(panelName) {
+  const target = ["vocab", "phrase", "pattern"].includes(panelName) ? panelName : "vocab";
+  state.activeCardPanel = target;
+  elements.cardSubTabs.forEach((tab) => {
+    const isActive = tab.dataset.cardPanel === target;
+    tab.classList.toggle("active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+  });
+  Object.entries(elements.cardSubPanels).forEach(([key, panel]) => {
+    if (!panel) return;
+    panel.classList.toggle("active", key === target);
+  });
 }
 
 function openModal(show) {
@@ -556,6 +599,19 @@ function loadLegacySettings() {
     console.warn("旧设置读取失败", error);
   }
   return null;
+}
+
+async function loadDeepHabitsFromMeta() {
+  try {
+    const saved = await getMetaValue(META_DEEP_HABITS_KEY);
+    if (saved && Array.isArray(saved.patterns)) {
+      state.deepHabitPatterns = sanitizeHabitPatterns(saved.patterns);
+      return;
+    }
+  } catch (error) {
+    console.warn("习惯挖掘缓存读取失败", error);
+  }
+  state.deepHabitPatterns = [];
 }
 
 async function loadLastConversationId() {
@@ -1200,6 +1256,13 @@ async function refreshStats() {
 
     renderCountList(elements.statVocab, vocabCounts);
     renderPatternList(elements.statPatterns, patternCounts);
+    if (elements.statHabits) {
+      if (state.deepHabitPatterns.length) {
+        renderHabitList(elements.statHabits, state.deepHabitPatterns);
+      } else {
+        elements.statHabits.innerHTML = "<li>点击“开始挖掘”分析你的口头禅与惯用句式。</li>";
+      }
+    }
   } catch (error) {
     console.error(error);
   }
@@ -1613,6 +1676,46 @@ function handleImportListAction(event) {
   }
 }
 
+function sanitizeHabitPatterns(patterns) {
+  if (!Array.isArray(patterns)) return [];
+  return patterns
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const template = String(item.template || "").trim();
+      if (!template) return null;
+      const count = Number(item.count || 0);
+      const examples = Array.isArray(item.examples)
+        ? item.examples.filter((value) => typeof value === "string" && value.trim()).slice(0, 3)
+        : [];
+      return {
+        template,
+        count: Number.isFinite(count) ? count : 0,
+        examples,
+        raw_pattern: Array.isArray(item.raw_pattern) ? item.raw_pattern : [],
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.count - a.count);
+}
+
+async function loadIncludedUserSentences() {
+  const [{ conversationIncludeMap, importIncludeMap }, messages, importMessages] =
+    await Promise.all([
+      loadIncludeMaps(),
+      getAllRecords("messages"),
+      getAllRecords("importMessages"),
+    ]);
+  return [...messages, ...importMessages]
+    .filter((msg) => msg.role === "user" && msg.text && msg.text.trim().length > 1)
+    .filter((msg) => {
+      if (msg.importId) {
+        return isImportIncluded(msg.importId, importIncludeMap, msg.conversationId);
+      }
+      return isConversationIncluded(msg.conversationId, conversationIncludeMap);
+    })
+    .map((msg) => msg.text.trim());
+}
+
 async function handleDeepAnalysis() {
   if (!elements.statHabits) return;
 
@@ -1620,53 +1723,34 @@ async function handleDeepAnalysis() {
   elements.statHabits.innerHTML = '<li class="loading">正在挖掘您的语言习惯...</li>';
 
   try {
-    // 1. 收集所有用户语句
-    const [{ conversationIncludeMap, importIncludeMap }, messages, importMessages] =
-      await Promise.all([
-        loadIncludeMaps(),
-        getAllRecords("messages"),
-        getAllRecords("importMessages"),
-      ]);
-
-    const userSentences = [...messages, ...importMessages]
-      .filter((msg) =>
-        msg.role === "user" &&
-        msg.text &&
-        msg.text.trim().length > 1
-      )
-      .filter((msg) => {
-        if (msg.importId) {
-          return isImportIncluded(msg.importId, importIncludeMap, msg.conversationId);
-        }
-        return isConversationIncluded(msg.conversationId, conversationIncludeMap);
-      })
-      .map(msg => msg.text);
-
+    const userSentences = await loadIncludedUserSentences();
     if (userSentences.length < 5) {
-      elements.statHabits.innerHTML = '<li>数据不足，请多聊几句再试。</li>';
+      elements.statHabits.innerHTML = "<li>数据不足，请多聊几句再试。</li>";
       return;
     }
 
-    // 2. 调用 Python 服务
     const response = await fetch("/api/habit/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sentences: userSentences, min_support: 2 })
+      body: JSON.stringify({ sentences: userSentences, min_support: 2 }),
     });
-
     if (!response.ok) {
       throw new Error(`服务异常: ${response.status}`);
     }
 
     const result = await response.json();
-    const patterns = result.patterns || [];
-
-    // 3. 渲染结果
+    const patterns = sanitizeHabitPatterns(result.patterns || []);
+    state.deepHabitPatterns = patterns;
+    await setMetaValue(META_DEEP_HABITS_KEY, {
+      updatedAt: Date.now(),
+      patterns,
+    });
     renderHabitList(elements.statHabits, patterns);
-
+    await refreshCards();
   } catch (error) {
     console.error("挖掘失败", error);
-    elements.statHabits.innerHTML = `<li style="color:red">挖掘失败，请确保后台 Python 服务已启动 (Port 8006)。<br>错误: ${error.message}</li>`;
+    elements.statHabits.innerHTML =
+      `<li style="color:red">挖掘失败，请确保后台 Python 服务已启动 (Port 8006)。<br>错误: ${error.message}</li>`;
   } finally {
     elements.deepAnalysisBtn.disabled = false;
   }
@@ -1838,33 +1922,45 @@ async function refreshCards() {
 }
 
 async function renderCards() {
-  if (!elements.vocabCards || !elements.patternCards) {
+  if (!elements.vocabCards || !elements.phraseCards || !elements.patternCards) {
     return;
   }
   try {
     const analyses = await loadIncludedAnalyses();
     const base = buildCardBase(analyses);
+    state.cardBaseSnapshot = base;
+    syncCardSelection(base);
     const language = elements.cardLangSelect.value;
     renderCardSection(elements.vocabCards, base.vocabCards, language, "vocab");
+    renderCardSection(elements.phraseCards, base.phraseCards, language, "phrase");
     renderCardSection(elements.patternCards, base.patternCards, language, "pattern");
     updateCardStatusText(base);
+    applyCardSelectionToDom();
   } catch (error) {
     console.error(error);
   }
 }
 
-function updateCardStatusText(base) {
+function updateCardStatusText(base = state.cardBaseSnapshot) {
   if (!elements.cardStatus) return;
-  const total = base.vocabCards.length + base.patternCards.length;
+  const total = base.vocabCards.length + base.phraseCards.length + base.patternCards.length;
   if (!total) {
-    elements.cardStatus.textContent = "暂无卡片，先在对话中输入一些语句。";
+    elements.cardStatus.textContent = "暂无卡片，先在对话中输入一些语句并执行深度挖掘。";
+    updateSelectAllButton(base);
+    updateGenerateSelectedButton();
     return;
   }
-  elements.cardStatus.textContent = `共 ${total} 张卡片（词汇 ${base.vocabCards.length} / 句型 ${base.patternCards.length}）。`;
+  const selected = state.cardSelection.size;
+  const selectionText = selected ? `，已选 ${selected} 张` : "";
+  elements.cardStatus.textContent =
+    `共 ${total} 张卡片（词汇 ${base.vocabCards.length} / 惯用表达 ${base.phraseCards.length} / 句型 ${base.patternCards.length}）${selectionText}。`;
+  updateSelectAllButton(base);
+  updateGenerateSelectedButton();
 }
 
 function buildCardBase(analyses) {
   const vocabMap = new Map();
+  const phraseMap = new Map();
   const patternMap = new Map();
 
   analyses.forEach((record) => {
@@ -1906,7 +2002,16 @@ function buildCardBase(analyses) {
     });
   });
 
+  mergeDeepHabitsIntoCards(phraseMap, patternMap);
+
   const vocabCards = Array.from(vocabMap.values())
+    .map((card) => ({
+      ...card,
+      sentences: Array.from(card.sentences),
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  const phraseCards = Array.from(phraseMap.values())
     .map((card) => ({
       ...card,
       sentences: Array.from(card.sentences),
@@ -1920,7 +2025,50 @@ function buildCardBase(analyses) {
     }))
     .sort((a, b) => b.count - a.count);
 
-  return { vocabCards, patternCards };
+  return { vocabCards, phraseCards, patternCards };
+}
+
+function mergeDeepHabitsIntoCards(phraseMap, patternMap) {
+  const habits = Array.isArray(state.deepHabitPatterns) ? state.deepHabitPatterns : [];
+  habits.forEach((item) => {
+    const template = normalizeHabitTemplate(item.template);
+    if (!template) return;
+    const examples = Array.isArray(item.examples)
+      ? item.examples.filter((value) => typeof value === "string" && value.trim())
+      : [];
+    const score = Number(item.count || 0) || examples.length || 1;
+
+    if (isAbstractHabitTemplate(template)) {
+      const existing = patternMap.get(template) || {
+        key: template,
+        usage: "深度习惯挖掘句式",
+        sentences: new Set(),
+        count: 0,
+      };
+      examples.forEach((sentence) => existing.sentences.add(sentence));
+      existing.count += score;
+      patternMap.set(template, existing);
+      return;
+    }
+
+    const existing = phraseMap.get(template) || {
+      key: template,
+      usage: "深度习惯表达",
+      sentences: new Set(),
+      count: 0,
+    };
+    examples.forEach((sentence) => existing.sentences.add(sentence));
+    existing.count += score;
+    phraseMap.set(template, existing);
+  });
+}
+
+function normalizeHabitTemplate(template) {
+  return String(template || "").replace(/\s+/g, " ").trim();
+}
+
+function isAbstractHabitTemplate(template) {
+  return /<[^>]+>/.test(template);
 }
 
 function renderCardSection(container, cards, language, type) {
@@ -1935,18 +2083,38 @@ function renderCardSection(container, cards, language, type) {
   cards.forEach((card) => {
     const cardEl = document.createElement("div");
     cardEl.className = "learning-card";
-    cardEl.dataset.id = cardId(type, card.key);
+    const id = cardId(type, card.key);
+    cardEl.dataset.id = id;
+    cardEl.classList.toggle("is-selected", state.cardSelection.has(id));
 
     const header = document.createElement("div");
     header.className = "card-header";
+    const top = document.createElement("div");
+    top.className = "card-top";
     const key = document.createElement("div");
     key.className = "card-key";
     key.textContent = card.key;
-    header.appendChild(key);
-    if (type === "pattern" && card.usage) {
+    top.appendChild(key);
+    const select = document.createElement("label");
+    select.className = "card-select-label";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.cardSelect = "true";
+    checkbox.dataset.cardId = id;
+    checkbox.checked = state.cardSelection.has(id);
+    const selectText = document.createElement("span");
+    selectText.textContent = "选中";
+    select.appendChild(checkbox);
+    select.appendChild(selectText);
+    top.appendChild(select);
+    header.appendChild(top);
+    if (card.usage || card.count) {
       const usage = document.createElement("div");
       usage.className = "card-usage";
-      usage.textContent = `作用：${card.usage}`;
+      const metaParts = [];
+      if (card.usage) metaParts.push(card.usage);
+      if (card.count) metaParts.push(`频次 ${card.count}`);
+      usage.textContent = metaParts.join(" · ");
       header.appendChild(usage);
     }
 
@@ -1984,7 +2152,7 @@ function renderCardSection(container, cards, language, type) {
     translationBlock.className = "card-translation";
     const translationTitle = document.createElement("div");
     translationTitle.className = "card-subtitle";
-    translationTitle.textContent = `${CARD_LANG_LABELS[language]?.label || "目标语言"}表达`;
+    translationTitle.textContent = buildCardTranslationTitle(type, language);
     translationBlock.appendChild(translationTitle);
 
     const translation = getCardTranslation(type, card.key, language);
@@ -2006,6 +2174,26 @@ function renderCardSection(container, cards, language, type) {
         example.textContent = translation.example;
         translationBlock.appendChild(exampleTitle);
         translationBlock.appendChild(example);
+      }
+      if (type === "phrase" && translation.pattern) {
+        const patternTitle = document.createElement("div");
+        patternTitle.className = "card-subtitle";
+        patternTitle.textContent = "背后句型";
+        const patternText = document.createElement("div");
+        patternText.className = "card-pattern-hint";
+        patternText.textContent = translation.pattern;
+        translationBlock.appendChild(patternTitle);
+        translationBlock.appendChild(patternText);
+      }
+      if (type === "phrase" && translation.patternExample) {
+        const patternExampleTitle = document.createElement("div");
+        patternExampleTitle.className = "card-subtitle";
+        patternExampleTitle.textContent = "句型例句";
+        const patternExample = document.createElement("div");
+        patternExample.className = "card-example";
+        patternExample.textContent = translation.patternExample;
+        translationBlock.appendChild(patternExampleTitle);
+        translationBlock.appendChild(patternExample);
       }
     }
 
@@ -2038,6 +2226,111 @@ function handleCardToggle(event) {
     const hiddenCount = Number(button.dataset.hiddenCount || 0);
     button.textContent = `展开 ${hiddenCount} 条`;
   }
+}
+
+function buildCardTranslationTitle(type, language) {
+  const langLabel = CARD_LANG_LABELS[language]?.label || "目标语言";
+  const typeLabelMap = {
+    vocab: "词汇",
+    phrase: "惯用表达",
+    pattern: "句型",
+  };
+  return `${langLabel}${typeLabelMap[type] || ""}表达`;
+}
+
+function handleCardSelectionChange(event) {
+  const input = event.target.closest("input[data-card-select='true']");
+  if (!input) return;
+  const id = input.dataset.cardId;
+  if (!id) return;
+  if (input.checked) {
+    state.cardSelection.add(id);
+  } else {
+    state.cardSelection.delete(id);
+  }
+  const card = input.closest(".learning-card");
+  if (card) {
+    card.classList.toggle("is-selected", input.checked);
+  }
+  updateGenerateSelectedButton();
+  updateCardStatusText();
+}
+
+function getAllCardIds(base = state.cardBaseSnapshot) {
+  const ids = [];
+  (base.vocabCards || []).forEach((card) => ids.push(cardId("vocab", card.key)));
+  (base.phraseCards || []).forEach((card) => ids.push(cardId("phrase", card.key)));
+  (base.patternCards || []).forEach((card) => ids.push(cardId("pattern", card.key)));
+  return ids;
+}
+
+function syncCardSelection(base = state.cardBaseSnapshot) {
+  const allIds = new Set(getAllCardIds(base));
+  state.cardSelection.forEach((id) => {
+    if (!allIds.has(id)) {
+      state.cardSelection.delete(id);
+    }
+  });
+}
+
+function applyCardSelectionToDom() {
+  const checkboxes = document.querySelectorAll("input[data-card-select='true']");
+  checkboxes.forEach((checkbox) => {
+    const id = checkbox.dataset.cardId;
+    const checked = id ? state.cardSelection.has(id) : false;
+    checkbox.checked = checked;
+    const card = checkbox.closest(".learning-card");
+    if (card) {
+      card.classList.toggle("is-selected", checked);
+    }
+  });
+  updateGenerateSelectedButton();
+}
+
+function updateSelectAllButton(base = state.cardBaseSnapshot) {
+  if (!elements.selectAllCardsBtn) return;
+  const ids = getAllCardIds(base);
+  if (!ids.length) {
+    elements.selectAllCardsBtn.disabled = true;
+    elements.selectAllCardsBtn.textContent = "全选卡片";
+    return;
+  }
+  elements.selectAllCardsBtn.disabled = false;
+  const allSelected = ids.every((id) => state.cardSelection.has(id));
+  elements.selectAllCardsBtn.textContent = allSelected ? "取消全选" : "全选卡片";
+}
+
+function handleToggleSelectAllCards() {
+  const ids = getAllCardIds();
+  if (!ids.length) return;
+  const allSelected = ids.every((id) => state.cardSelection.has(id));
+  if (allSelected) {
+    state.cardSelection.clear();
+  } else {
+    ids.forEach((id) => state.cardSelection.add(id));
+  }
+  applyCardSelectionToDom();
+  updateCardStatusText();
+}
+
+function syncCardSelectionFromDom() {
+  const checkboxes = document.querySelectorAll("input[data-card-select='true']");
+  if (!checkboxes.length) return;
+  const domSelection = new Set();
+  checkboxes.forEach((checkbox) => {
+    if (!checkbox.checked) return;
+    const id = checkbox.dataset.cardId;
+    if (id) {
+      domSelection.add(id);
+    }
+  });
+  state.cardSelection = domSelection;
+}
+
+function updateGenerateSelectedButton() {
+  if (!elements.generateSelectedCardsBtn) return;
+  const count = state.cardSelection.size;
+  elements.generateSelectedCardsBtn.textContent = count ? `生成选中 (${count})` : "生成选中";
 }
 
 function getCardTranslation(type, key, language) {
@@ -2108,28 +2401,49 @@ async function handleGeneratePractice() {
 }
 
 async function handleEnrichCards() {
+  return runCardEnrichment({ selectedOnly: false });
+}
+
+async function handleEnrichSelectedCards() {
+  return runCardEnrichment({ selectedOnly: true });
+}
+
+async function runCardEnrichment({ selectedOnly }) {
   if (state.isEnriching) return;
+  if (selectedOnly) {
+    syncCardSelectionFromDom();
+    updateCardStatusText();
+  }
   if (!settings.apiKey) {
     setCardStatus("需要 API 才能补全卡片。");
     return;
   }
   state.isEnriching = true;
+  if (elements.generateSelectedCardsBtn) {
+    elements.generateSelectedCardsBtn.disabled = true;
+  }
   elements.enrichCardsBtn.disabled = true;
   await loadCardTranslations();
   try {
     const analyses = await loadIncludedAnalyses();
     const base = buildCardBase(analyses);
+    state.cardBaseSnapshot = base;
+    syncCardSelection(base);
     const language = elements.cardLangSelect.value;
-    const missing = collectMissingCards(base, language);
+    const missing = collectMissingCards(base, language, { selectedOnly });
+    if (missing.noSelection) {
+      setCardStatus("请先勾选要生成的卡片（支持多选）。");
+      return;
+    }
     if (!missing.total) {
-      setCardStatus("当前语言的卡片已全部补全。");
+      setCardStatus(selectedOnly ? "选中卡片已全部补全。" : "当前语言的卡片已全部补全。");
       return;
     }
     setCardStatus(`正在补全 ${missing.total} 张卡片...`);
     const result = await fetchCardEnrichment(missing, language);
     await applyCardEnrichment(result, language);
     await loadCardTranslations();
-    renderCards();
+    await renderCards();
     if (missing.truncated) {
       setCardStatus("补全完成（已按数量限制截断）。");
     } else {
@@ -2140,17 +2454,36 @@ async function handleEnrichCards() {
     setCardStatus("补全失败，请稍后重试。");
   } finally {
     state.isEnriching = false;
+    if (elements.generateSelectedCardsBtn) {
+      elements.generateSelectedCardsBtn.disabled = false;
+    }
     elements.enrichCardsBtn.disabled = false;
   }
 }
 
-function collectMissingCards(base, language) {
+function collectMissingCards(base, language, { selectedOnly = false } = {}) {
+  const selectedIds = new Set(state.cardSelection);
+  if (selectedOnly && !selectedIds.size) {
+    return {
+      vocab: [],
+      phrases: [],
+      patterns: [],
+      total: 0,
+      truncated: false,
+      noSelection: true,
+    };
+  }
   const vocab = [];
+  const phrases = [];
   const patterns = [];
   let remaining = CARD_ENRICH_LIMIT;
   let totalMissing = 0;
 
+  const canInclude = (type, key) =>
+    !selectedOnly || selectedIds.has(cardId(type, key));
+
   base.vocabCards.forEach((card) => {
+    if (!canInclude("vocab", card.key)) return;
     const translation = getCardTranslation("vocab", card.key, language);
     if (translation && translation.text) {
       return;
@@ -2164,7 +2497,24 @@ function collectMissingCards(base, language) {
     remaining -= 1;
   });
 
+  base.phraseCards.forEach((card) => {
+    if (!canInclude("phrase", card.key)) return;
+    const translation = getCardTranslation("phrase", card.key, language);
+    if (translation && translation.text && translation.pattern) {
+      return;
+    }
+    totalMissing += 1;
+    if (remaining <= 0) return;
+    phrases.push({
+      phrase: card.key,
+      usage: card.usage || "",
+      sentence: card.sentences[0] || "",
+    });
+    remaining -= 1;
+  });
+
   base.patternCards.forEach((card) => {
+    if (!canInclude("pattern", card.key)) return;
     const translation = getCardTranslation("pattern", card.key, language);
     if (translation && translation.text) {
       return;
@@ -2181,9 +2531,11 @@ function collectMissingCards(base, language) {
 
   return {
     vocab,
+    phrases,
     patterns,
     total: Math.min(totalMissing, CARD_ENRICH_LIMIT),
     truncated: totalMissing > CARD_ENRICH_LIMIT,
+    noSelection: false,
   };
 }
 
@@ -2195,19 +2547,20 @@ async function fetchCardEnrichment(missing, language) {
       {
         role: "system",
         content:
-          "你是学习卡片生成器。给定中文词汇和中文句型，请输出目标语言的翻译与例句。只输出严格 JSON，对应输入结构返回：{vocab:[{key, translation, example}], patterns:[{pattern, translation, example}] }。translation 为目标语言表达，patterns.translation 使用模板形式（如 I like A）。example 为目标语言例句。",
+          "你是学习卡片生成器。给定中文词汇、惯用表达和句型，输出目标语言表达。只输出严格 JSON：{vocab:[{key, translation, example}], phrases:[{phrase, translation, pattern, example, patternExample}], patterns:[{pattern, translation, example}] }。phrases.translation 是惯用表达译法，phrases.pattern 是该表达背后的通用句型模板，phrases.patternExample 是该句型例句。patterns.translation 使用模板形式（如 I like A），example 为目标语言例句。",
       },
       {
         role: "user",
         content: JSON.stringify({
           language: info.name,
           vocab: missing.vocab,
+          phrases: missing.phrases,
           patterns: missing.patterns,
         }),
       },
     ],
     temperature: 0.4,
-    max_tokens: 900,
+    max_tokens: 1200,
   };
   const data = await callApiWithRetry(payload, { retries: 1, delayMs: 700 });
   const choice = data.choices && data.choices[0];
@@ -2222,11 +2575,26 @@ async function applyCardEnrichment(result, language) {
     return;
   }
   const vocab = Array.isArray(result.vocab) ? result.vocab : [];
+  const phrases = Array.isArray(result.phrases) ? result.phrases : [];
   const patterns = Array.isArray(result.patterns) ? result.patterns : [];
 
   for (const item of vocab) {
     if (!item || !item.key || !item.translation) continue;
     await saveCardTranslation("vocab", item.key, language, item.translation, item.example || "");
+  }
+  for (const item of phrases) {
+    if (!item || !item.phrase || !item.translation) continue;
+    await saveCardTranslation(
+      "phrase",
+      item.phrase,
+      language,
+      item.translation,
+      item.example || "",
+      {
+        pattern: item.pattern || item.translation,
+        patternExample: item.patternExample || "",
+      }
+    );
   }
   for (const item of patterns) {
     if (!item || !item.pattern || !item.translation) continue;
@@ -2234,7 +2602,7 @@ async function applyCardEnrichment(result, language) {
   }
 }
 
-async function saveCardTranslation(type, key, language, text, example) {
+async function saveCardTranslation(type, key, language, text, example, extra = {}) {
   const id = cardId(type, key);
   const existing = state.cardTranslations.get(id) || (await getRecord("cards", id));
   const record = {
@@ -2244,7 +2612,14 @@ async function saveCardTranslation(type, key, language, text, example) {
     translations: existing?.translations ? { ...existing.translations } : {},
     updatedAt: Date.now(),
   };
-  record.translations[language] = { text, example };
+  const payload = { text, example };
+  if (extra.pattern) {
+    payload.pattern = extra.pattern;
+  }
+  if (extra.patternExample) {
+    payload.patternExample = extra.patternExample;
+  }
+  record.translations[language] = payload;
   if (existing) {
     await updateRecord("cards", record);
   } else {

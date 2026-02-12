@@ -180,7 +180,7 @@
       <div class="panel-title">
         <div>
           <h2>学习卡片</h2>
-          <p>从语句中整理词汇与句型。</p>
+          <p>从语句与深度习惯挖掘中整理词汇、惯用表达和句型。</p>
         </div>
         <div class="panel-actions">
           <label class="inline-select">
@@ -190,23 +190,57 @@
             </select>
           </label>
           <button class="ghost" id="refreshCardsBtn" type="button">刷新</button>
-          <button class="primary" id="enrichCardsBtn" type="button">补全卡片</button>
+          <button class="ghost" id="selectAllCardsBtn" type="button">全选卡片</button>
+          <button class="primary" id="generateSelectedCardsBtn" type="button">生成选中</button>
+          <button class="ghost" id="enrichCardsBtn" type="button">补全全部缺失</button>
         </div>
       </div>
       <div class="card-status" id="cardStatus">
-        卡片由本地算法生成，补全会调用大模型。
+        卡片由本地算法与深度挖掘生成；可先勾选再批量生成。
       </div>
-      <div class="card-section">
-        <div class="card-section-title">
-          <h3>词汇</h3>
-        </div>
-        <div class="card-grid" id="vocabCards"></div>
+      <div class="card-subtab-rail" role="tablist" aria-label="卡片分类">
+        <button
+          class="card-subtab active"
+          type="button"
+          role="tab"
+          data-card-panel="vocab"
+          aria-selected="true"
+        >
+          词汇
+        </button>
+        <button
+          class="card-subtab"
+          type="button"
+          role="tab"
+          data-card-panel="phrase"
+          aria-selected="false"
+        >
+          惯用表达
+        </button>
+        <button
+          class="card-subtab"
+          type="button"
+          role="tab"
+          data-card-panel="pattern"
+          aria-selected="false"
+        >
+          句型
+        </button>
       </div>
-      <div class="card-section">
-        <div class="card-section-title">
-          <h3>句型</h3>
+      <div class="card-subpanel active" id="card-subpanel-vocab" role="tabpanel">
+        <div class="card-section">
+          <div class="card-grid" id="vocabCards"></div>
         </div>
-        <div class="card-grid" id="patternCards"></div>
+      </div>
+      <div class="card-subpanel" id="card-subpanel-phrase" role="tabpanel">
+        <div class="card-section">
+          <div class="card-grid" id="phraseCards"></div>
+        </div>
+      </div>
+      <div class="card-subpanel" id="card-subpanel-pattern" role="tabpanel">
+        <div class="card-section">
+          <div class="card-grid" id="patternCards"></div>
+        </div>
       </div>
     </div>
   </section>
